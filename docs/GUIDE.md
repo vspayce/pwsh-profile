@@ -29,7 +29,7 @@ Everything you need to install, use, customize and maintain this profile. For th
 
 A PowerShell profile is a script that runs every time you open a shell. This one gives you:
 
-- **~100 ready-made functions** for networking, DNS, certificates, Active Directory, system health, files and more
+- **~100 ready-made functions**, including `ask` for Microsoft 365 Copilot for networking, DNS, certificates, Active Directory, system health, files and more
 - **a better prompt** (admin badge, git branch, command timing, red `>` on failure)
 - **better history and tab completion** (type a few letters and press Up; Tab shows a menu)
 - **session directory history** (`dh` lists where you've been, `j` jumps back)
@@ -286,6 +286,16 @@ ubd                                 # unblock everything in Downloads
 encrypt .\secrets.zip               # AES-256 with a password (Protect-PathWithPassword)
 ```
 
+### Passwords for users
+
+```powershell
+dp                                  # easy to read over the phone: "silly-dino47"
+dp -Strong                          # DinoPass's stronger style
+genpass -Length 20 -Copy            # proper random password (never leaves your PC)
+```
+
+DinoPass is meant to be fun and easy to remember, not strong, so use it for temporary passwords that must be changed at first sign-in. If dinopass.com can't be reached, `dp` gives you a local password instead.
+
 ### Elevation
 
 ```powershell
@@ -302,10 +312,37 @@ Update-AllModule                    # update them all
 Remove-OldModule                    # clean up old versions
 ```
 
+### Ask Microsoft 365 Copilot
+
+`ask` sends a question to M365 Copilot, which answers from your mail, calendar, Teams chats, OneDrive/SharePoint files and the web, and prints the answer with its sources.
+
+```powershell
+ask what meetings do I have tomorrow
+ask who did I promise to follow up with this week       # follow-ups continue the same conversation
+ask -New summarize unread email from my manager          # start fresh
+Get-Content .\error.log -Tail 50 | ask what is causing these errors   # piped text = extra context
+ask -NoWeb what did we decide about the VPN migration    # company data only, no web search
+ask -File 'https://contoso.sharepoint.com/sites/IT/Shared Documents/Runbook.docx' what are the failover steps
+ask -SignOut
+```
+
+**One-time setup:**
+
+1. You need a **Microsoft 365 Copilot license** on your work account.
+2. `Install-Module Microsoft.Graph.Authentication -Scope CurrentUser`
+3. Run `ask hello`. A Microsoft sign-in opens. It uses Microsoft's own *Graph Command Line Tools* app, so you don't need to register an app.
+4. If you see **"Need admin approval"**, your tenant hasn't approved these read permissions for that app yet. Send your Entra admin this list: `Sites.Read.All, Mail.Read, People.Read.All, OnlineMeetingTranscript.Read.All, Chat.Read, ChannelMessage.Read.All, ExternalItem.Read.All`. All of them are delegated, so Copilot only ever sees what *you* can already see.
+
+More than one tenant? Set `$PwshProfileConfig.CopilotTenantId = 'contoso.onmicrosoft.com'` in `local.ps1`, or pass `-TenantId`.
+
+Notes: the Copilot Chat API is still **beta** at Microsoft, so it can change. Very long questions can time out. Answers are text only.
+
 ### Little things
 
 ```powershell
-genpass -Length 24 -Copy            # password to clipboard
+genpass -Length 24 -Copy            # strong local password to clipboard (New-Password)
+dp                                  # DinoPass: "stinky-raptor42" style, copied (Get-DinoPass)
+dp -Strong ; dp -Count 5 -NoCopy
 b64 'text' ; unb64 'dGV4dA=='       # Base64
 mac 001a.2b3c.4d5e                  # MAC address formats
 Get-IPSubnet -CIDR 10.1.2.0/22      # subnet math
@@ -354,6 +391,7 @@ oh-my-posh init pwsh | Invoke-Expression
 | `DirHistoryMax` | `50` | how many folders `dh` remembers |
 | `DeferredInit` | `@('gh','zoxide')` | tools initialised after the first prompt (if installed) |
 | `WeatherLocation` | (none) | default for `weather` |
+| `CopilotTenantId` | (none) | tenant for `ask` (Invoke-CopilotChat) |
 
 **Environment variables** (set before the profile loads, e.g. in Windows Terminal profile settings):
 

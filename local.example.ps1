@@ -7,6 +7,7 @@
 # $PwshProfileConfig.DurationThresholdMs = 5000
 # $PwshProfileConfig.PromptChar          = '$'
 # $PwshProfileConfig.WeatherLocation     = 'Seattle'
+# $PwshProfileConfig.CopilotTenantId     = 'contoso.onmicrosoft.com'   # for 'ask'
 
 # --- Work defaults -------------------------------------------------------------
 # Point every AD cmdlet at one domain controller:

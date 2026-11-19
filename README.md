@@ -44,7 +44,7 @@ Want to see where startup time goes? Run `$env:PWSH_PROFILE_TIMING = '1'; reload
 
 ## What's in it
 
-**96 functions** across networking & DNS, certificates & TLS, Active Directory, system health, files, modules and everyday utilities: 37 of ours plus 59 curated from [jonlabelle/pwsh-profile](https://github.com/jonlabelle/pwsh-profile).
+**98 functions** across networking & DNS, certificates & TLS, Active Directory, system health, files, modules and everyday utilities: 39 of ours plus 59 curated from [jonlabelle/pwsh-profile](https://github.com/jonlabelle/pwsh-profile).
 
 - **[docs/GUIDE.md](docs/GUIDE.md)**: the full guide (install, cookbook, customizing, adding functions, troubleshooting)
 - **[docs/FUNCTIONS.md](docs/FUNCTIONS.md)**: every function with alias, description and an example (generated from the code)
@@ -67,7 +67,9 @@ A taste:
 | `admin cmd` | run something elevated (new Windows Terminal tab) |
 | `dh` / `j 3` / `j proj` | session folder history and jump back |
 | `search text` / `sarep old new` | search / replace inside files |
-| `genpass -Copy` / `cliplist` | password to clipboard / pasted list to array |
+| `ask what's on my calendar` | Microsoft 365 Copilot from the terminal ([setup](docs/GUIDE.md#ask-microsoft-365-copilot)) |
+| `genpass -Copy` / `dp` | strong password / a DinoPass one ("stinky-raptor42") to clipboard |
+| `cliplist` | pasted list to a clean array |
 | `pf` / `newfn` / `ep` / `reload` | list / create / edit / reload profile functions |
 
 ### Prompt
