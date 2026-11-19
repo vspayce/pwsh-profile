@@ -132,6 +132,23 @@ Describe 'Functions (offline)' {
             Get-Hash $f -Expected ('0' * 64) 6> $null | Should -BeFalse
         } finally { Remove-Item $f }
     }
+    It 'Get-FolderSize totals every level from one pass' {
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path (Join-Path $tmp 'a/deep') -Force
+        $null = New-Item -ItemType Directory -Path (Join-Path $tmp 'b') -Force
+        [IO.File]::WriteAllBytes((Join-Path $tmp 'a/deep/x.bin'), [byte[]]::new(3000))
+        [IO.File]::WriteAllBytes((Join-Path $tmp 'a/y.bin'), [byte[]]::new(1000))
+        [IO.File]::WriteAllBytes((Join-Path $tmp 'b/z.bin'), [byte[]]::new(500))
+        [IO.File]::WriteAllBytes((Join-Path $tmp 'loose.bin'), [byte[]]::new(100))
+        try {
+            $r = Get-FolderSize $tmp -Depth 2 6> $null
+            ($r | Where-Object Folder -eq 'a').Bytes | Should -Be 4000
+            ($r | Where-Object Folder -eq 'b').Bytes | Should -Be 500
+            ($r | Where-Object { $_.Folder.Trim() -match '^a[\\/]deep$' }).Bytes | Should -Be 3000
+            ($r | Where-Object Folder -eq '(files here)').Bytes | Should -Be 100
+            $r[0].Folder | Should -Be 'a'
+        } finally { Remove-Item $tmp -Recurse -Force }
+    }
     It 'New-Password always includes each character class' {
         1..20 | ForEach-Object {
             $p = New-Password -Length 8

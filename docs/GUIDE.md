@@ -266,7 +266,8 @@ Get-SystemInfo                      # OS, CPU, memory, disks, network in one vie
 Show-SystemResourceMonitor          # live CPU/memory/disk dashboard
 topp -By CPU                        # top processes
 df                                  # disk space (Get-DiskUsage)
-du C:\Users -Top 10                 # what's using the space? (Get-FolderSize)
+du C:\Users                         # what's using the space? one parallel pass, with % bars (Get-FolderSize)
+du C:\ -Depth 2 -Top 30             # rank folders two levels deep from the same scan
 Show-FileStorageMetrics C:\Shares   # deeper storage breakdown
 Get-NetworkProcess                  # which process has which connection
 ```

@@ -95,7 +95,7 @@
 | `Find-File` | `ff` | Recursively finds files whose name matches a pattern. | `ff *.log` |  |
 | `Get-CommandPath` | `which` | Shows where a command comes from: exe path, alias target, function file, or cmdlet module. | `which git` |  |
 | `Get-DiskUsage` | `df` | Free/used space for every drive, like 'df -h'. | `df` |  |
-| `Get-FolderSize` | `du` | Size of each subfolder, biggest first - find what is filling a disk. | `du C:\Users -Top 10` |  |
+| `Get-FolderSize` | `du` | Size of every subfolder in one fast parallel pass, biggest first, with a bar - find what is filling a disk. | `du C:\Users` |  |
 | `Get-Hash` | `hash` | File hash in one line, optionally checked against the hash from a vendor's download page. | `hash .\installer.msi` |  |
 | `Get-PathPermission` |  | Shows file and directory permission details for one or more paths. | `Get-PathPermission -Path ~/.ssh, ~/.config` | J |
 | `Get-RecentErrors` | `errs` | Latest Critical/Error events from the System and Application logs (Windows). | `errs` |  |
