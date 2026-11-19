@@ -1,0 +1,13 @@
+# Machine-local, never committed
+local.ps1
+Functions/Local/
+
+# Test output
+TestResults/
+testResults.xml
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/settings.json

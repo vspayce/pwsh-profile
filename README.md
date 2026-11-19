@@ -1,0 +1,148 @@
+# pwsh-profile
+
+A fast, modular PowerShell profile for sysadmins. Every function lives in its own file and only loads the first time you use it, so the shell stays quick no matter how many you add.
+
+Works on **PowerShell 7+** (Windows, macOS, Linux) and **Windows PowerShell 5.1**.
+
+## Install
+
+```powershell
+irm https://raw.githubusercontent.com/vspayce/pwsh-profile/main/install.ps1 | iex
+```
+
+What that does:
+
+- clones this repo to `~/.pwsh-profile` (it downloads a zip if git isn't installed)
+- adds a three-line loader block to your profile; on Windows it does this for **both** PowerShell 7 and 5.1
+- backs up any profile file it changes, and is safe to run again
+
+Update later with `Update-Profile`. Uninstall with `& ~/.pwsh-profile/install.ps1 -Uninstall`.
+
+> Windows PowerShell 5.1 on an older machine? Run this first:
+> `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'`
+
+## How it works
+
+```
+profile.ps1                    loader - dot-sourced from $PROFILE
+Core/                          always loaded, kept tiny
+  00-Environment.ps1           settings, platform/admin flags, UTF-8, TLS 1.2
+  10-PSReadLine.ps1            history search, predictions, menu completion
+  20-Prompt.ps1                prompt, directory history, window title
+  30-Completers.ps1            winget/dotnet completion, deferred gh/zoxide init
+  40-Shortcuts.ps1             ..  ...  ....
+Functions/<Category>/Verb-Noun.ps1   one function per file, lazy-loaded
+Functions/Local/               your machine-only functions (gitignored)
+local.ps1                      your machine-only settings (gitignored)
+```
+
+At startup the loader creates a tiny stub for each file in `Functions/`. The first time you call `Test-Port`, its stub dot-sources `Test-Port.ps1`, replaces itself with the real function, and runs it with your arguments and pipeline input. Aliases come from a comment at the top of each file, so `tp` works before anything is loaded.
+
+Slow init scripts (like `gh` completion and `zoxide`) run right after the first prompt appears, so they never delay startup.
+
+Want to see where startup time goes? Run `$env:PWSH_PROFILE_TIMING = '1'; reload`, or `Measure-ProfileLoad`.
+
+## What's in it
+
+Run `pf` to see this list in your terminal, or `pf dns` to search it.
+
+| Category | Function | Alias | What it does |
+|---|---|---|---|
+| Network | `Test-Port` | `tp` | Fast TCP check, many hosts/ports at once |
+| | `Get-MyIP` | `myip` | Local IPv4 + public IP |
+| | `Clear-DnsCache` | `flushdns` | Flush DNS on Windows, macOS or Linux |
+| | `Get-CertificateExpiration` | `certexp` | When a server's TLS cert expires |
+| | `Convert-MacAddress` | `mac` | Colon / dash / Cisco / plain formats |
+| Active Directory | `Get-LockedUsers` | `locked` | Every locked-out account |
+| | `Get-UserStatus` | `ustat` | Enabled, locked, real password expiry; `-Unlock` |
+| | `Find-ADUserQuick` | `seu` | Fuzzy user search (name, email, description...) |
+| | `Find-ADGroupQuick` | `seg` | Fuzzy group search |
+| | `Copy-ADGroupMembership` | `copygroups` | "Make them like Bob", with `-WhatIf` |
+| System | `Show-Uptime` | `uptime`* | Last boot + uptime, local or remote |
+| | `Get-RecentErrors` | `errs` | Recent Critical/Error events |
+| | `Get-Hash` | `hash` | File hash; `-Expected` prints MATCH/MISMATCH |
+| | `Get-DiskUsage` | `df`* | Space on every drive |
+| | `Get-FolderSize` | `du`* | Biggest subfolders first |
+| | `Find-File` | `ff` | Recursive filename search |
+| | `Get-CommandPath` | `which`* | Where a command comes from |
+| | `New-File` | `touch`* | Create a file or update its timestamp |
+| | `Enter-NewDirectory` | `mkcd` | Make a folder and cd into it |
+| | `Start-Elevated` | `admin` | Elevated tab/window, optionally running a command |
+| | `Unblock-Downloads` | `ubd` | Unblock files in Downloads |
+| | `Get-TopProcess` | `topp` | Top processes by memory or CPU |
+| Navigation | `Show-DirectoryHistory` | `dh` | Numbered list of folders visited this session |
+| | `Set-LocationFromHistory` | `j` | `j 3` or `j proj` to jump back |
+| Utilities | `New-Password` | `genpass` | Strong local passwords, `-Copy` to clipboard |
+| | `Get-ClipboardList` | `cliplist` | Pasted list → clean array (`cliplist \| tp -Port 3389`) |
+| | `ConvertTo-Base64` / `ConvertFrom-Base64` | `b64` / `unb64` | Text or files |
+| | `Get-Weather` | `weather` | wttr.in in your terminal |
+| | `Set-WindowTitle` | `title` | Set the tab title |
+| | `Get-DadJoke` | `joke` | For morale |
+| Profile | `Show-ProfileFunction` | `pf` | List/search everything here |
+| | `New-ProfileFunction` | `newfn` | Scaffold a new function file |
+| | `Edit-Profile` | `ep` | Open the repo, a function (`ep tp`) or `ep -Local` |
+| | `Invoke-ProfileReload` | `reload` | Reload in place, picking up edits |
+| | `Update-Profile` | | `git pull` + reload |
+| | `Measure-ProfileLoad` | | Startup cost in ms |
+
+\* Windows only, so the real `df`, `du`, `which`, `touch` and `uptime` aren't hidden on macOS/Linux.
+
+### Prompt
+
+```
+ ADMIN  ~/src/pwsh-profile (main) 3.4s
+>
+```
+
+- a red **ADMIN** badge when elevated; `user@host` over SSH or remoting
+- the git branch, read straight from `.git/HEAD` (no git.exe call, so it's instant)
+- how long the last command took, when it was over 2 seconds
+- the `>` turns red when the last command failed
+- tells Windows Terminal your current folder, so **Duplicate tab** opens in the same place
+
+Every folder you visit is recorded, including via `cd`, `pushd`, `cd -` and scripts, so `dh` and `j` always have the full history.
+
+### Keys (PSReadLine)
+
+| Key | Action |
+|---|---|
+| ↑ / ↓ | Search history for lines starting with what you've typed |
+| Tab / F1 | Menu of all completions |
+| F2 | Switch inline / list prediction view |
+| Ctrl+F | Accept the next word of a suggestion |
+| Ctrl+D | Exit on an empty line |
+
+Lines containing things like `password`, `token` or `-AsPlainText` are never saved to your history file.
+
+## Customizing
+
+- **Settings for one machine:** `ep -Local` opens `local.ps1`, which is never committed. It shows how to set a default AD server, turn off parts of the prompt, add oh-my-posh, and so on.
+- **A new function for everyone:** `newfn Get-PrinterQueue -Category System -Alias pq` creates the file from a template, registers it, and opens it. Commit and push.
+- **A function for this machine only:** `newfn Connect-HomeLab -Local` (goes in `Functions/Local/`, which is gitignored).
+
+### Rules for function files
+
+1. Name the file after the function: `Functions/<Category>/Verb-Noun.ps1`, one public function per file.
+2. Put aliases in the header: `# Alias: tp` (or `# Alias(Windows): df` for Windows-only).
+3. Put comment-based help **inside** the function so `Get-Help` and `pf` can read it.
+4. Put helper functions inside the main function, or in a `Private/` folder (those are skipped by the loader).
+5. Use `$global:` for state that has to outlive a call (see `Core/00-Environment.ps1`).
+
+Tests in `Tests/` enforce 1–3 on every push.
+
+## Tests
+
+```powershell
+Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser
+Invoke-Pester ./Tests
+```
+
+GitHub Actions runs the tests and PSScriptAnalyzer on Windows (PowerShell 7 and 5.1), macOS and Linux.
+
+## Credits
+
+Ideas borrowed from [jonlabelle/pwsh-profile](https://github.com/jonlabelle/pwsh-profile) and the r/PowerShell thread *"What clever things do you have in your $profile?"*
+
+## License
+
+MIT

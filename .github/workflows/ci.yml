@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ${{ matrix.shell }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, shell: pwsh }
+          - { os: windows-latest, shell: powershell }   # Windows PowerShell 5.1
+          - { os: ubuntu-latest,  shell: pwsh }
+          - { os: macos-latest,   shell: pwsh }
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester and PSScriptAnalyzer
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser -Force -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+
+      - name: PSScriptAnalyzer
+        run: |
+          $r = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+          $r | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+          if ($r | Where-Object Severity -eq 'Error') { exit 1 }
+
+      - name: Pester
+        run: |
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = './Tests'
+          $cfg.Output.Verbosity = 'Detailed'
+          $cfg.Run.Exit = $true
+          Invoke-Pester -Configuration $cfg
+
+      - name: Installer round-trip
+        run: |
+          ./install.ps1 -InstallPath "$HOME/.pwsh-profile-ci" -Repo '${{ github.repository }}' -Branch '${{ github.ref_name }}'
+          $p = if ($IsWindows -or $env:OS -eq 'Windows_NT') { Join-Path ([Environment]::GetFolderPath('MyDocuments')) $(if ($PSVersionTable.PSEdition -eq 'Core') { 'PowerShell\profile.ps1' } else { 'WindowsPowerShell\profile.ps1' }) } else { $PROFILE.CurrentUserAllHosts }
+          if (-not (Select-String -Path $p -SimpleMatch '# >>> pwsh-profile >>>' -Quiet)) { throw "loader not added to $p" }
+          ./install.ps1 -InstallPath "$HOME/.pwsh-profile-ci" -Uninstall
+          if (Select-String -Path $p -SimpleMatch '# >>> pwsh-profile >>>' -Quiet) { throw 'uninstall did not remove loader' }
