@@ -1,0 +1,1840 @@
+# Source: jonlabelle/pwsh-profile@b888ab6 (MIT, Copyright (c) Jon LaBelle) - Functions/Utilities/Convert-LineEnding.ps1
+# Synced by tools/Sync-Upstream.ps1 - edit upstream or remove this file from the sync list before changing it.
+function Convert-LineEnding
+{
+    <#
+    .SYNOPSIS
+        Converts line endings between LF (Unix) and CRLF (Windows) with optional file encoding conversion.
+
+    .DESCRIPTION
+        This function converts line endings in text files between Unix (LF) and Windows (CRLF) formats
+        with optional file encoding conversion. By default, the original file encoding is preserved, but
+        you can specify a target encoding to convert files during line ending processing. It uses streaming
+        operations for optimal performance with large files and automatically detects and skips binary files
+        to prevent corruption.
+
+        The function includes intelligent optimization that independently checks both line ending format
+        and file encoding. Only the conversions that are actually needed are performed:
+        - If line endings are already correct but encoding needs conversion, only encoding is changed
+        - If encoding is already correct but line endings need conversion, only line endings are changed
+        - If both are already correct, the file is skipped entirely, preserving modification timestamps
+        - If both need conversion, both are converted in a single operation
+
+        The function supports both individual files and directory processing with optional recursion.
+        It provides intelligent WhatIf support that analyzes files to show exactly what conversions
+        would be performed, rather than showing all files in scope.
+
+        Dependencies:
+        - Get-EncodingFromName: Resolves profile encoding names to .NET encoding instances.
+        - Get-FileEncoding: Detects source file encoding for preservation/conversion decisions.
+
+        Both dependencies are automatically loaded when needed.
+
+    .PARAMETER Path
+        The path to a file or directory to process.
+        Accepts an array of paths and supports pipeline input.
+        For directories, all text files will be processed unless filtered by Include/Exclude parameters.
+        If not provided, defaults to the current working directory.
+
+    .PARAMETER LineEnding
+        Specifies the target line ending format. Files are converted only if their current line
+        endings differ from the target format. Line ending conversion is performed independently
+        of encoding conversion - files that already have the correct line endings will not be
+        modified even if encoding conversion is needed.
+
+        Valid values:
+        - Auto (or System): Use platform default line endings (CRLF on Windows, LF on Unix/Linux/macOS) [Default]
+        - CRLF (or Windows): Carriage Return + Line Feed (Windows: \r\n)
+        - LF (or Unix): Line Feed only (Unix/Linux/macOS: \n)
+
+        Note that the single CR (/r) line ending (used by old Mac systems) is not supported.
+        There's simply no practical reason to convert files to/from this obsolete format anymore.
+
+    .PARAMETER Recurse
+        When processing directories, search recursively through all subdirectories.
+        Only applies when Path points to a directory.
+
+    .PARAMETER Include
+        Specifies file patterns to include when processing directories.
+        Supports wildcards (e.g., '*.txt', '*.ps1', '*.md') and specific filenames.
+        Default includes common text file extensions and extension-less text files
+        like LICENSE, README, Dockerfile, Makefile, etc.
+
+    .PARAMETER Exclude
+        Specifies file patterns to exclude when processing directories.
+        Supports wildcards and common binary file extensions are excluded by default.
+
+    .PARAMETER Force
+        Overwrites read-only files. Without this parameter, read-only files are skipped.
+
+    .PARAMETER Encoding
+        Specifies the target file encoding. When set to 'Auto' (default), the original file encoding
+        is preserved. When set to a specific encoding, files will be converted to that encoding only
+        if their current encoding differs from the target. Encoding conversion is performed independently
+        of line ending conversion - files that already have the correct encoding will not be modified
+        even if line ending conversion is needed.
+
+        Valid values:
+        - Auto: Preserve original file encoding (default)
+        - UTF8: UTF-8 without BOM
+        - UTF8BOM: UTF-8 with BOM
+        - UTF16LE: UTF-16 Little Endian with BOM
+        - UTF16BE: UTF-16 Big Endian with BOM
+        - UTF32: UTF-32 Little Endian with BOM
+        - UTF32BE: UTF-32 Big Endian with BOM
+        - ASCII: 7-bit ASCII encoding
+        - ANSI: System default ANSI encoding (code page dependent)
+
+    .PARAMETER EnsureEndingNewline
+        Ensures that each processed file ends with a newline character. If a file already ends
+        with a newline (LF or CRLF), it will not be modified. If a file does not end with a
+        newline, one will be added using the specified LineEnding format. This parameter is
+        useful for ensuring consistent file formatting across projects, as many tools and
+        editors expect text files to end with a newline character.
+
+    .PARAMETER PreserveTimestamps
+        When specified, preserves the original file timestamps (creation time and last write time)
+        when files are modified. By default, modified files will have updated timestamps
+        reflecting the time of conversion.
+
+    .PARAMETER PassThru
+        Returns information about the processed files.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'script.ps1' -LineEnding 'LF'
+
+        Converts the specified PowerShell script to use Unix line endings only if it doesn't
+        already have LF line endings. The file encoding is preserved (Auto encoding).
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'script.ps1'
+
+        Converts the specified PowerShell script to use platform default line endings
+        (CRLF on Windows, LF on Unix/Linux/macOS). The file encoding is preserved.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'C:\Scripts' -LineEnding 'CRLF' -Recurse -Include '*.ps1', '*.txt'
+
+        Recursively converts all PowerShell and text files in the Scripts directory to Windows line endings.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'project' -LineEnding 'LF' -Recurse
+
+        Converts all files in the project directory to Unix line endings, including common text files
+        like LICENSE, README, Dockerfile, and Makefile, along with all supported text file extensions.
+
+    .EXAMPLE
+        PS > Get-ChildItem '*.md' | Convert-LineEnding -LineEnding 'LF' -WhatIf
+
+        Shows which Markdown files would be converted to Unix line endings vs. which would be skipped.
+        Files needing line ending conversion show "Convert line endings from [Current] to LF" while files
+        with correct endings show "Skip file - already has correct line endings (LF)".
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'project' -LineEnding 'LF' -Exclude '*.min.js', 'node_modules' -Recurse
+
+        Converts files to Unix line endings while excluding minified JavaScript files and node_modules directories.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'data.csv' -LineEnding 'CRLF' -Encoding 'UTF8BOM'
+
+        Converts a CSV file to Windows line endings and UTF-8 with BOM encoding. Both conversions
+        are performed independently - if the file already has CRLF endings but wrong encoding,
+        only the encoding will be converted.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'legacy-file.txt' -LineEnding 'CRLF' -Encoding 'ANSI'
+
+        Converts a legacy text file to Windows line endings and system default ANSI encoding.
+        This is useful for older Windows applications that expect ANSI-encoded files with
+        the system's default code page.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'unicode-data.xml' -LineEnding 'LF' -Encoding 'UTF32'
+
+        Converts an XML file to Unix line endings and UTF-32 Little Endian encoding with BOM.
+        UTF-32 provides fixed-width encoding for all Unicode characters, useful for applications
+        that need predictable character indexing.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'big-endian-file.txt' -LineEnding 'CRLF' -Encoding 'UTF32BE'
+
+        Converts a file to Windows line endings and UTF-32 Big Endian encoding. This might be
+        needed for interoperability with systems that prefer big-endian byte ordering.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'script.txt' -LineEnding 'LF' -Encoding 'UTF8' -PassThru
+
+        Converts to LF line endings and UTF-8 without BOM. The PassThru output will show which
+        conversions were actually performed (line endings, encoding, both, or neither).
+
+    .EXAMPLE
+        PS > Get-ChildItem '*.txt' | Convert-LineEnding -LineEnding 'LF' -Encoding 'UTF8' -PassThru
+
+        Processes all text files for both line ending and encoding conversion. Returns detailed
+        information about which files were converted and what changes were made.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'mixed-content' -LineEnding 'LF' -Recurse -PassThru |
+             Where-Object {$_.Converted -or $_.EncodingChanged} |
+             Format-Table FilePath,Converted,EncodingChanged,SourceEncoding,TargetEncoding
+
+        Processes a directory recursively and shows only files that actually required conversion,
+        displaying what type of conversion was performed on each file.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path @('file1.txt','file2.json','file3.xml') -LineEnding 'CRLF' -Encoding 'UTF8' -PassThru
+
+        Processes multiple specific files and shows which ones needed line ending conversion,
+        encoding conversion, both, or neither. Demonstrates independent conversion logic
+        across different file types.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'config.json' -LineEnding 'LF' -Encoding 'UTF8' -WhatIf
+
+        Preview what would happen when converting a JSON file. Shows output like:
+        "Convert line endings from CRLF to LF" (if line endings need conversion)
+        "Convert encoding from UTF8BOM to UTF8" (if encoding needs conversion)
+        "Skip file - already has correct line endings (LF) and encoding (UTF8)" (if no conversion needed)
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'document.txt' -Encoding 'UTF8BOM' -PassThru
+
+        Converts only the encoding to UTF-8 with BOM while using platform default line endings.
+        When LineEnding is not specified, it defaults to 'Auto' which uses the current platform's
+        default line ending format. PassThru output will show EncodingChanged: True and line
+        ending information based on platform defaults.
+
+    .EXAMPLE
+        PS > Get-ChildItem 'src\*.cs' | Convert-LineEnding -LineEnding 'CRLF' -Force -PassThru | Where-Object Converted
+
+        Converts C# source files to Windows line endings and returns only files that actually
+        had their line endings converted (filters out files that already had CRLF).
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'legacy-file.txt' -LineEnding 'LF' -Encoding 'UTF8' -PassThru
+
+        Converts both line endings and encoding. The file timestamps will be updated to
+        the current time since -PreserveTimestamps is not specified.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'project' -LineEnding 'LF' -Recurse -PreserveTimestamps -PassThru
+
+        Converts all files in the project directory to Unix line endings while preserving their
+        original timestamps. Without -PreserveTimestamps, modified files would get new timestamps
+        reflecting the time of conversion. Files that don't need conversion are never touched,
+        so their timestamps are naturally preserved regardless of the -PreserveTimestamps setting.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'legacy-file.txt' -LineEnding 'LF' -Encoding 'UTF8' -PassThru | Format-Table
+
+        Converts both line endings and encoding with tabular output showing before/after state:
+        FilePath         OriginalLF OriginalCRLF NewLF NewCRLF SourceEncoding TargetEncoding EncodingChanged Converted Skipped
+        --------         ---------- ------------ ----- ------- -------------- -------------- --------------- --------- -------
+        legacy-file.txt  0          15           15    0       ASCII          UTF8           True            True      False
+
+    .EXAMPLE
+        PS > $results = Get-ChildItem '*.md' | Convert-LineEnding -LineEnding 'LF' -Encoding 'UTF8' -PassThru
+        PS > $results | Group-Object Skipped,Converted,EncodingChanged | Select-Object Name,Count
+
+        Processes Markdown files and groups results by conversion type to see summary statistics:
+        - "False,True,True": Files that had both line endings and encoding converted
+        - "False,True,False": Files that had only line endings converted
+        - "False,False,True": Files that had only encoding converted
+        - "True,False,False": Files that were skipped (no conversion needed)
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'project' -Recurse -PassThru
+
+        Converts all files in the current working directory to platform default line endings using 'Auto' mode.
+        On Windows systems, files will be converted to CRLF; on Unix/Linux/macOS systems, files will
+        be converted to LF. Returns detailed information about processed files.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'script.js' -LineEnding 'LF' -EnsureEndingNewline
+
+        Converts the JavaScript file to Unix line endings and ensures it ends with a newline.
+        If the file already ends with a newline, it won't be modified for that purpose.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'config.json' -LineEnding 'CRLF' -EnsureEndingNewline -PassThru
+
+        Converts a JSON file to Windows line endings and ensures it ends with CRLF.
+        Returns detailed information showing whether an ending newline was added.
+
+    .EXAMPLE
+        PS > Get-ChildItem '*.cs' | Convert-LineEnding -LineEnding 'CRLF' -EnsureEndingNewline -PassThru |
+             Where-Object EndingNewlineAdded
+
+        Processes C# files and returns only those that had an ending newline added.
+        Useful for identifying files that didn't previously end with a newline.
+
+    .EXAMPLE
+        PS > Convert-LineEnding -Path 'src' -LineEnding 'LF' -EnsureEndingNewline -Recurse -Include '*.py' -WhatIf
+
+        Shows what would happen when processing Python files recursively - which files would
+        have line endings converted and which would have ending newlines added.
+
+    .EXAMPLE
+        PS > Measure-Command { Convert-LineEnding -Path 'large-project' -LineEnding 'LF' -Recurse }
+
+        Measures the performance of processing a large project directory. The optimized
+        implementation reduces I/O operations by combining file analysis (binary detection,
+        encoding detection, line ending analysis) into a single file read per file,
+        providing significant performance improvements over the previous implementation.
+
+    .OUTPUTS
+        None by default.
+        [System.Object[]] when PassThru is specified, containing:
+        - File: Full path to the processed file
+        - LineEnding: Target line ending format
+        - Encoding: Target or detected encoding
+        - OriginalLineEnding: Source line ending format
+        - OriginalEncoding: Source file encoding
+        - Converted: Whether line ending conversion was performed
+        - EncodingChanged: Whether encoding conversion was performed
+        - EndingNewlineAdded: Whether an ending newline was added to the file
+        - Skipped: Whether the file was skipped (all conversions already correct)
+
+    .NOTES
+        BINARY FILE DETECTION:
+
+        The function automatically detects binary files using multiple methods:
+
+        - File extension patterns (executables, images, archives, etc.)
+        - Content analysis for null bytes and high ratio of non-printable characters
+        - Files are skipped if determined to be binary to prevent corruption
+
+        ENCODING PRESERVATION:
+
+        File encoding is detected and preserved during conversion by default.
+        When the -Encoding parameter is specified, files are converted to the target encoding.
+
+        Supported encodings:
+        - Auto: Preserve original file encoding (default)
+        - UTF8: UTF-8 without BOM
+        - UTF8BOM: UTF-8 with BOM
+        - UTF16LE: UTF-16 Little Endian with BOM
+        - UTF16BE: UTF-16 Big Endian with BOM
+        - UTF32: UTF-32 Little Endian with BOM
+        - UTF32BE: UTF-32 Big Endian with BOM
+        - ASCII: 7-bit ASCII encoding
+        - ANSI: System default ANSI encoding (code page dependent)
+
+        INTELLIGENT CONVERSION:
+
+        The function analyzes each file to determine what conversions are actually needed:
+
+        - Line ending conversion only if current format differs from target
+        - Encoding conversion only if current encoding differs from target
+        - Both conversions if both differ from targets
+        - Skip file entirely if both line endings and encoding are already correct
+
+        This optimization minimizes file modifications and preserves timestamps when possible.
+
+        PERFORMANCE:
+
+        Optimized for high performance with large directory trees through several techniques:
+
+        - Combined file analysis reduces I/O operations from 4-5 file reads to 1-2 per file
+        - Optimized include/exclude filtering eliminates redundant array operations
+        - Uses existing FileInfo objects from Get-ChildItem to avoid redundant Get-Item calls
+        - Streaming operations handle large files efficiently without loading entire contents
+        - Intelligent pre-scanning samples the first 64KB for encoding and line ending detection
+        - Files are processed only if conversions are actually needed
+        - Binary files are detected early using both extension patterns and content analysis
+
+        The function evaluates line ending and encoding conversions independently - only
+        the conversions that are actually needed are performed. Files that already have
+        the correct line endings, encoding, and ending newline are skipped entirely,
+        preserving modification timestamps and avoiding unnecessary processing.
+
+        TIMESTAMP PRESERVATION:
+
+        By default, file timestamps are updated to reflect the time of conversion. Use the
+        -PreserveTimestamps switch to maintain original file timestamps (creation time and last write time)
+        when files are modified. This can be useful to maintain original file history and
+        make the conversion process transparent to file system monitoring tools. Files that are
+        skipped (no conversion needed) are never touched, so their timestamps are naturally preserved
+        regardless of the -PreserveTimestamps setting.
+
+        Author: Jon LaBelle
+        License: MIT
+        Source: https://github.com/jonlabelle/pwsh-profile/blob/main/Functions/Utilities/Convert-LineEnding.ps1
+
+    .LINK
+        https://jonlabelle.com/snippets/view/powershell/convert-line-endings-in-powershell
+
+    .LINK
+        https://github.com/jonlabelle/pwsh-profile/blob/main/Functions/Convert-LineEnding.ps1
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '')]
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([System.Object[]])]
+    param(
+        [Parameter(ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('FullName')]
+        [ValidateNotNullOrEmpty()]
+        [String[]]$Path = (Get-Location).Path,
+
+        [Parameter()]
+        [ValidateSet('Auto', 'LF', 'CRLF', 'Unix', 'Windows', 'System')]
+        [String]$LineEnding = 'Auto',
+
+        [Parameter()]
+        [Switch]$Recurse,
+
+        [Parameter()]
+        [String[]]$Include = @(
+            # General Text Files
+            '*.txt', '*.md', '*.log',
+
+            # PowerShell Files
+            '*.ps1', '*.psm1', '*.psd1', '*.ps1xml',
+
+            # Configuration Files
+            '*.ini', '*.cfg', '*.config', '*.conf', '*.rc', '*.properties',
+            '*.toml', '*.env', '.env.*', '*.editorconfig', '*.htaccess',
+
+            # Data Formats
+            '*.xml', '*.json', '*.yml', '*.yaml', '*.csv', '*.tsv',
+            '*.po', '*.pot', '*.bib', '*.rst', '*.adoc',
+
+            # Programming Languages
+            '*.cs', '*.vb', '*.cpp', '*.c', '*.h', '*.hpp',
+            '*.java', '*.go', '*.rs', '*.swift', '*.php', '*.py', '*.rb',
+            '*.pl', '*.tcl', '*.lua', '*.r', '*.tex', '*.sql',
+
+            # Web Development
+            '*.js', '*.ts', '*.html', '*.htm', '*.css', '*.scss', '*.sass',
+            '*.svg', '*.xaml',
+
+            # Scripts and Shell Files
+            '*.sh', '*.bat', '*.cmd', '*.profile', '*.zshrc', '*.bashrc', '*.vimrc',
+            '.zprofile', '.bash_profile', '.bash_logout', '.npmrc', '.nvmrc',
+            '.inputrc', '.curlrc', '.screenrc',
+
+            # Version Control
+            '*.gitignore', '*.gitattributes',
+
+            # Build and Make Files
+            '*.makefile', '*.cmake',
+
+            # Common Extension-less Text Files
+            'LICENSE', 'LICENCE', 'README', 'CHANGELOG',
+            'AUTHORS', 'CONTRIBUTORS', 'CONTRIBUTING', 'INSTALL',
+            'NEWS', 'HISTORY', 'COPYING', 'COPYRIGHT',
+            'NOTICE', 'THANKS', 'TODO', 'BUGS',
+            'Dockerfile', 'Makefile', 'Rakefile', 'Gemfile', 'Podfile',
+            'Vagrantfile', 'Procfile', 'Brewfile'
+        ),
+
+        [Parameter()]
+        [String[]]$Exclude = @(
+            # Executables and Libraries
+            '*.exe', '*.dll', '*.so', '*.dylib', '*.a', '*.lib', '*.obj', '*.o',
+
+            # Archives
+            '*.zip', '*.7z', '*.rar', '*.tar', '*.gz', '*.bz2', '*.xz',
+
+            # Images
+            '*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp', '*.tiff', '*.ico',
+            '*.webp', '*.avif', '*.heic', '*.svgz',
+
+            # Audio/Video
+            '*.mp3', '*.mp4', '*.avi', '*.mkv', '*.mov', '*.wmv', '*.flv',
+
+            # Documents
+            '*.pdf', '*.doc', '*.docx', '*.xls', '*.xlsx', '*.ppt', '*.pptx',
+
+            # Dev Minified Files and Directories
+            '*.min.js', '*.min.css', 'node_modules', '.git', '.vs', '.vscode',
+
+            # Additional Archives and Binaries
+            '*.tgz', '*.tbz2', '*.txz', '*.cab', '*.msi', '*.dmg', '*.pkg',
+            '*.deb', '*.rpm', '*.nupkg', '*.snupkg',
+
+            # Compiled Code
+            '*.class', '*.jar', '*.pyc', '*.pyo', '*.pyd', '*.wasm',
+
+            # Additional Media Formats
+            '*.flac', '*.wav', '*.aac', '*.ogg', '*.m4a', '*.m4v', '*.3gp', '*.webm',
+
+            # Additional Document Formats
+            '*.odt', '*.ods', '*.odp', '*.sqlite', '*.db', '*.mdb',
+
+            # Font Files
+            '*.ttf', '*.otf', '*.woff', '*.woff2',
+
+            # Version Control and Build Directories
+            '.svn', '.hg', '.bzr', '__pycache__', 'dist', 'build', 'target',
+            'bin', 'obj', '.idea',
+            '.venv', 'venv', '.tox', '.pytest_cache', '.mypy_cache',
+            '.next', '.nuxt', '.svelte-kit', '.terraform', 'coverage',
+
+            # System/Cache Files
+            '.DS_Store', 'Thumbs.db', '.cache'
+        ),
+
+        [Parameter()]
+        [Switch]$Force,
+
+        [Parameter()]
+        [ValidateSet('Auto', 'UTF8', 'UTF8BOM', 'UTF16LE', 'UTF16BE', 'UTF32', 'UTF32BE', 'ASCII', 'ANSI')]
+        [String]$Encoding = 'Auto',
+
+        [Parameter()]
+        [Alias('InsertFinalNewline', 'EnsureFinalNewline', 'FinalNewline')]
+        [Switch]$EnsureEndingNewline,
+
+        [Parameter()]
+        [Alias('KeepTimestamps')]
+        [Switch]$PreserveTimestamps,
+
+        [Parameter()]
+        [Switch]$PassThru
+    )
+
+    begin
+    {
+        # Helper function to load dependencies on demand
+        function Import-DependencyIfNeeded
+        {
+            param(
+                [Parameter(Mandatory)]
+                [String]$FunctionName,
+
+                [Parameter(Mandatory)]
+                [String]$RelativePath
+            )
+
+            if (-not (Get-Command -Name $FunctionName -ErrorAction Ignore))
+            {
+                Write-Verbose "$FunctionName is required - attempting to load it"
+
+                # Resolve path from current script location
+                $dependencyPath = Join-Path -Path $PSScriptRoot -ChildPath $RelativePath
+                $dependencyPath = [System.IO.Path]::GetFullPath($dependencyPath)
+
+                if (Test-Path -Path $dependencyPath -PathType Leaf)
+                {
+                    return $dependencyPath
+                }
+                else
+                {
+                    throw "Required function '$FunctionName' could not be found. Expected location: $dependencyPath"
+                }
+            }
+            else
+            {
+                Write-Verbose "$FunctionName is already loaded"
+                return $null
+            }
+        }
+
+        $dependencyPath = Import-DependencyIfNeeded -FunctionName 'Get-EncodingFromName' -RelativePath 'Get-EncodingFromName.ps1'
+        if ($dependencyPath)
+        {
+            try
+            {
+                . $dependencyPath
+                Write-Verbose "Loaded Get-EncodingFromName from: $dependencyPath"
+            }
+            catch
+            {
+                throw "Failed to load required dependency 'Get-EncodingFromName' from '$dependencyPath': $($_.Exception.Message)"
+            }
+        }
+
+        $dependencyPath = Import-DependencyIfNeeded -FunctionName 'Get-FileEncoding' -RelativePath 'Get-FileEncoding.ps1'
+        if ($dependencyPath)
+        {
+            try
+            {
+                . $dependencyPath
+                Write-Verbose "Loaded Get-FileEncoding from: $dependencyPath"
+            }
+            catch
+            {
+                throw "Failed to load required dependency 'Get-FileEncoding' from '$dependencyPath': $($_.Exception.Message)"
+            }
+        }
+
+        # Map aliases to standard values
+        switch ($LineEnding)
+        {
+            'Windows' { $LineEnding = 'CRLF' }
+            'Unix' { $LineEnding = 'LF' }
+            'System' { $LineEnding = 'Auto' }
+        }
+
+        # Resolve Auto line ending to platform default
+        if ($LineEnding -eq 'Auto')
+        {
+            # Use cross-platform detection pattern from project instructions
+            if ($PSVersionTable.PSVersion.Major -lt 6)
+            {
+                # PowerShell 5.1 - Windows only
+                $script:IsWindowsPlatform = $true
+            }
+            else
+            {
+                # PowerShell Core - use built-in variables
+                $script:IsWindowsPlatform = $IsWindows
+            }
+
+            if ($script:IsWindowsPlatform)
+            {
+                $LineEnding = 'CRLF'
+                Write-Verbose 'Auto mode: Using Windows default line ending (CRLF)'
+            }
+            else
+            {
+                $LineEnding = 'LF'
+                Write-Verbose 'Auto mode: Using Unix/Linux/macOS default line ending (LF)'
+            }
+        }
+
+        Write-Verbose "Starting line ending conversion to $LineEnding"
+
+        # Define line ending strings
+        $lineEndings = @{
+            'LF' = "`n"
+            'CRLF' = "`r`n"
+        }
+
+        $targetLineEnding = $lineEndings[$LineEnding]
+        $processedFiles = [System.Collections.ArrayList]::new()
+        $binaryExtensions = @(
+            # Executables and libraries
+            '.exe', '.dll', '.so', '.dylib', '.a', '.lib', '.obj', '.o',
+
+            # Archives, packages, and installers
+            '.zip', '.7z', '.rar', '.tar', '.gz', '.bz2', '.xz', '.tgz', '.tbz2', '.txz',
+            '.cab', '.iso', '.vhd', '.vhdx', '.msi', '.dmg', '.pkg', '.deb', '.rpm',
+            '.nupkg', '.snupkg', '.appimage',
+
+            # Images
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.ico',
+            '.webp', '.avif', '.heic', '.svgz', '.psd',
+
+            # Audio and video
+            '.mp3', '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv',
+            '.webm', '.flac', '.wav', '.aac', '.ogg', '.m4a', '.m4v', '.3gp',
+
+            # Documents
+            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp',
+
+            # Compiled code and binaries
+            '.class', '.jar', '.pyc', '.pyo', '.pyd', '.swf', '.wasm',
+
+            # Fonts
+            '.ttf', '.otf', '.woff', '.woff2',
+
+            # Databases
+            '.sqlite', '.db', '.mdb'
+        )
+
+        function Get-FileAnalysis
+        {
+            <#
+            .SYNOPSIS
+                Performs combined file analysis to reduce multiple file I/O operations.
+
+            .DESCRIPTION
+                This function combines binary detection, line ending analysis, encoding detection,
+                and ending newline checking into a single file read operation for optimal performance.
+            #>
+            param(
+                [String]$FilePath,
+                [String]$TargetLineEnding,
+                [String]$TargetEncodingName,
+                [Boolean]$CheckEndingNewline
+            )
+
+            try
+            {
+                $fileInfo = Get-Item -Path $FilePath -Force -ErrorAction Stop
+                if ($fileInfo.Length -eq 0)
+                {
+                    return @{
+                        IsBinary = $false
+                        SourceEncoding = New-Object System.Text.UTF8Encoding($false)
+                        NeedsLineEndingConversion = $false
+                        NeedsEncodingConversion = $false
+                        NeedsEndingNewline = $CheckEndingNewline
+                        Error = $null
+                    }
+                }
+
+                # First check file extension for obvious binary files
+                $extension = [System.IO.Path]::GetExtension($FilePath).ToLower()
+
+                if ($binaryExtensions -contains $extension)
+                {
+                    return @{
+                        IsBinary = $true
+                        SourceEncoding = $null
+                        NeedsLineEndingConversion = $false
+                        NeedsEncodingConversion = $false
+                        NeedsEndingNewline = $false
+                        Error = $null
+                    }
+                }
+
+                # Single file read operation for all analysis
+                $stream = [System.IO.File]::OpenRead($FilePath)
+                try
+                {
+                    # Read up to 64KB for analysis (same as original functions)
+                    $analysisSize = [Math]::Min($stream.Length, 65536)
+                    $analysisBuffer = New-Object byte[] $analysisSize
+                    $bytesRead = $stream.Read($analysisBuffer, 0, $analysisSize)
+
+                    # First, do encoding detection using BOM detection logic
+                    $sourceEncoding = $null
+                    $isUtf32 = $false
+                    $isUtf16 = $false
+
+                    if ($bytesRead -ge 4 -and $analysisBuffer[0] -eq 0xFF -and $analysisBuffer[1] -eq 0xFE -and $analysisBuffer[2] -eq 0x00 -and $analysisBuffer[3] -eq 0x00)
+                    {
+                        $sourceEncoding = [System.Text.Encoding]::UTF32
+                        $isUtf32 = $true
+                        Write-Verbose "File '$FilePath' detected as UTF-32 LE with BOM"
+                    }
+                    elseif ($bytesRead -ge 4 -and $analysisBuffer[0] -eq 0x00 -and $analysisBuffer[1] -eq 0x00 -and $analysisBuffer[2] -eq 0xFE -and $analysisBuffer[3] -eq 0xFF)
+                    {
+                        $sourceEncoding = New-Object System.Text.UTF32Encoding($true, $true)
+                        $isUtf32 = $true
+                        Write-Verbose "File '$FilePath' detected as UTF-32 BE with BOM"
+                    }
+                    elseif ($bytesRead -ge 3 -and $analysisBuffer[0] -eq 0xEF -and $analysisBuffer[1] -eq 0xBB -and $analysisBuffer[2] -eq 0xBF)
+                    {
+                        $sourceEncoding = New-Object System.Text.UTF8Encoding($true)
+                        Write-Verbose "File '$FilePath' detected as UTF-8 with BOM"
+                    }
+                    elseif ($bytesRead -ge 2 -and $analysisBuffer[0] -eq 0xFF -and $analysisBuffer[1] -eq 0xFE)
+                    {
+                        $sourceEncoding = [System.Text.Encoding]::Unicode
+                        $isUtf16 = $true
+                        Write-Verbose "File '$FilePath' detected as UTF-16 LE with BOM"
+                    }
+                    elseif ($bytesRead -ge 2 -and $analysisBuffer[0] -eq 0xFE -and $analysisBuffer[1] -eq 0xFF)
+                    {
+                        $sourceEncoding = [System.Text.Encoding]::BigEndianUnicode
+                        $isUtf16 = $true
+                        Write-Verbose "File '$FilePath' detected as UTF-16 BE with BOM"
+                    }
+                    else
+                    {
+                        # No BOM - try UTF-8 validation on sample
+                        try
+                        {
+                            $utf8Decoder = [System.Text.Encoding]::UTF8.GetDecoder()
+                            $utf8Decoder.Fallback = [System.Text.DecoderFallback]::ExceptionFallback
+                            $charBuffer = New-Object char[] ([System.Text.Encoding]::UTF8.GetMaxCharCount($bytesRead))
+                            $null = $utf8Decoder.GetChars($analysisBuffer, 0, $bytesRead, $charBuffer, 0)
+                            $sourceEncoding = New-Object System.Text.UTF8Encoding($false)
+                        }
+                        catch
+                        {
+                            # Check if all bytes are ASCII
+                            $isAscii = $true
+                            for ($i = 0; $i -lt $bytesRead; $i++)
+                            {
+                                if ($analysisBuffer[$i] -gt 127)
+                                {
+                                    $isAscii = $false
+                                    break
+                                }
+                            }
+                            $sourceEncoding = if ($isAscii) { [System.Text.Encoding]::ASCII } else { New-Object System.Text.UTF8Encoding($false) }
+                        }
+                    }
+
+                    # Now do binary detection (but skip for known text encodings)
+                    $isBinary = $false
+                    if (-not $isUtf32 -and -not $isUtf16)
+                    {
+                        # For non-UTF32/UTF16 files, do content-based binary detection
+                        $nullByteCount = 0
+                        $nonPrintableCount = 0
+
+                        for ($i = 0; $i -lt $bytesRead; $i++)
+                        {
+                            $byte = $analysisBuffer[$i]
+
+                            # Count null bytes for binary detection
+                            if ($byte -eq 0)
+                            {
+                                $nullByteCount++
+                            }
+
+                            # Count non-printable characters (excluding common whitespace)
+                            if ($byte -lt 32 -and $byte -ne 9 -and $byte -ne 10 -and $byte -ne 13)
+                            {
+                                $nonPrintableCount++
+                            }
+                        }
+
+                        if ($bytesRead -gt 0)
+                        {
+                            $nullByteRatio = $nullByteCount / $bytesRead
+                            $nonPrintableRatio = $nonPrintableCount / $bytesRead
+
+                            if ($nullByteCount -gt 0)
+                            {
+                                Write-Verbose "File '$FilePath' detected as binary due to null bytes (ratio: $nullByteRatio)"
+                                $isBinary = $nullByteRatio -gt 0.01
+                            }
+                            elseif ($nonPrintableRatio -gt 0.3)
+                            {
+                                Write-Verbose "File '$FilePath' detected as binary due to low printable character ratio ($nonPrintableRatio)"
+                                $isBinary = $true
+                            }
+                        }
+                    }
+
+                    if ($isBinary)
+                    {
+                        return @{
+                            IsBinary = $true
+                            SourceEncoding = $null
+                            NeedsLineEndingConversion = $false
+                            NeedsEncodingConversion = $false
+                            NeedsEndingNewline = $false
+                            Error = $null
+                        }
+                    }
+
+                    # Line ending detection (encoding-aware)
+                    $lfCount = 0
+                    $crlfCount = 0
+                    $crCount = 0
+
+                    if ($isUtf32)
+                    {
+                        # For UTF-32, look for line endings in 4-byte patterns
+                        # Start after BOM (4 bytes for UTF-32)
+                        $startPos = if ($sourceEncoding.GetPreamble().Length -gt 0) { 4 } else { 0 }
+                        $utf32Preamble = $sourceEncoding.GetPreamble()
+                        $isBigEndian = $utf32Preamble.Length -eq 4 -and $utf32Preamble[0] -eq 0x00 -and $utf32Preamble[1] -eq 0x00 -and $utf32Preamble[2] -eq 0xFE -and $utf32Preamble[3] -eq 0xFF
+                        for ($i = $startPos; $i -lt ($bytesRead - 3); $i += 4)
+                        {
+                            if ($isBigEndian)
+                            {
+                                # UTF-32 BE: look for 00 00 00 0A (LF) or 00 00 00 0D (CR)
+                                if ($analysisBuffer[$i] -eq 0x00 -and $analysisBuffer[$i + 1] -eq 0x00 -and $analysisBuffer[$i + 2] -eq 0x00)
+                                {
+                                    if ($analysisBuffer[$i + 3] -eq 0x0A) # LF
+                                    {
+                                        # Check if preceded by CR (0x00 0x00 0x00 0x0D pattern)
+                                        if ($i -ge ($startPos + 4) -and $analysisBuffer[$i - 4] -eq 0x00 -and $analysisBuffer[$i - 3] -eq 0x00 -and $analysisBuffer[$i - 2] -eq 0x00 -and $analysisBuffer[$i - 1] -eq 0x0D)
+                                        {
+                                            $crlfCount++
+                                        }
+                                        else
+                                        {
+                                            $lfCount++
+                                        }
+                                    }
+                                    elseif ($analysisBuffer[$i + 3] -eq 0x0D) # CR
+                                    {
+                                        # Check if not followed by LF
+                                        if ($i + 7 -lt $bytesRead -and -not ($analysisBuffer[$i + 4] -eq 0x00 -and $analysisBuffer[$i + 5] -eq 0x00 -and $analysisBuffer[$i + 6] -eq 0x00 -and $analysisBuffer[$i + 7] -eq 0x0A))
+                                        {
+                                            $crCount++
+                                        }
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                # UTF-32 LE: look for 0A 00 00 00 (LF) or 0D 00 00 00 (CR)
+                                if ($analysisBuffer[$i + 1] -eq 0x00 -and $analysisBuffer[$i + 2] -eq 0x00 -and $analysisBuffer[$i + 3] -eq 0x00)
+                                {
+                                    if ($analysisBuffer[$i] -eq 0x0A) # LF
+                                    {
+                                        # Check if preceded by CR
+                                        if ($i -ge ($startPos + 4) -and $analysisBuffer[$i - 4] -eq 0x0D)
+                                        {
+                                            $crlfCount++
+                                        }
+                                        else
+                                        {
+                                            $lfCount++
+                                        }
+                                    }
+                                    elseif ($analysisBuffer[$i] -eq 0x0D) # CR
+                                    {
+                                        # Check if not followed by LF
+                                        if ($i + 4 -lt $bytesRead -and -not ($analysisBuffer[$i + 4] -eq 0x0A))
+                                        {
+                                            $crCount++
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    elseif ($isUtf16)
+                    {
+                        # For UTF-16, look for line endings in 2-byte patterns
+                        # Start after BOM (2 bytes for UTF-16)
+                        $startPos = if ($sourceEncoding.GetPreamble().Length -gt 0) { 2 } else { 0 }
+                        for ($i = $startPos; $i -lt ($bytesRead - 1); $i += 2)
+                        {
+                            if ($sourceEncoding.ToString().Contains('BigEndian'))
+                            {
+                                # UTF-16 BE: look for 00 0A (LF) or 00 0D (CR)
+                                if ($analysisBuffer[$i] -eq 0x00)
+                                {
+                                    if ($analysisBuffer[$i + 1] -eq 0x0A) # LF
+                                    {
+                                        # Check if preceded by CR (0x00 0x0D pattern)
+                                        if ($i -ge 2 -and $analysisBuffer[$i - 2] -eq 0x00 -and $analysisBuffer[$i - 1] -eq 0x0D)
+                                        {
+                                            $crlfCount++
+                                        }
+                                        else
+                                        {
+                                            $lfCount++
+                                        }
+                                    }
+                                    elseif ($analysisBuffer[$i + 1] -eq 0x0D) # CR
+                                    {
+                                        # Check if not followed by LF
+                                        if ($i + 3 -lt $bytesRead -and -not ($analysisBuffer[$i + 2] -eq 0x00 -and $analysisBuffer[$i + 3] -eq 0x0A))
+                                        {
+                                            $crCount++
+                                        }
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                # UTF-16 LE: look for 0A 00 (LF) or 0D 00 (CR)
+                                if ($analysisBuffer[$i + 1] -eq 0x00)
+                                {
+                                    if ($analysisBuffer[$i] -eq 0x0A) # LF
+                                    {
+                                        # Check if preceded by CR
+                                        if ($i -ge 2 -and $analysisBuffer[$i - 2] -eq 0x0D)
+                                        {
+                                            $crlfCount++
+                                        }
+                                        else
+                                        {
+                                            $lfCount++
+                                        }
+                                    }
+                                    elseif ($analysisBuffer[$i] -eq 0x0D) # CR
+                                    {
+                                        # Check if not followed by LF
+                                        if ($i + 2 -lt $bytesRead -and -not ($analysisBuffer[$i + 2] -eq 0x0A))
+                                        {
+                                            $crCount++
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        # For UTF-8/ASCII, use standard byte-level detection
+                        # Start after BOM for UTF-8 (3 bytes), otherwise from beginning
+                        $startPos = if ($sourceEncoding.GetPreamble().Length -gt 0) { 3 } else { 0 }
+                        for ($i = $startPos; $i -lt $bytesRead; $i++)
+                        {
+                            $byte = $analysisBuffer[$i]
+
+                            if ($byte -eq 10) # LF
+                            {
+                                if ($i -gt $startPos -and $analysisBuffer[$i - 1] -eq 13) # Previous was CR
+                                {
+                                    $crlfCount++
+                                }
+                                else
+                                {
+                                    $lfCount++
+                                }
+                            }
+                            elseif ($byte -eq 13) # CR
+                            {
+                                if ($i -lt $bytesRead - 1 -and $analysisBuffer[$i + 1] -ne 10) # Next is not LF
+                                {
+                                    $crCount++
+                                }
+                            }
+                        }
+                    }
+
+                    # Determine if line ending conversion is needed
+                    $needsLineEndingConversion = $false
+                    if ($TargetLineEnding -eq "`n") # Target is LF
+                    {
+                        $needsLineEndingConversion = $crlfCount -gt 0 -or $crCount -gt 0
+                    }
+                    elseif ($TargetLineEnding -eq "`r`n") # Target is CRLF
+                    {
+                        $needsLineEndingConversion = $lfCount -gt 0 -or $crCount -gt 0
+                    }
+
+                    # Check encoding conversion need
+                    $targetEncoding = if ($TargetEncodingName -ne 'Auto') { Get-EncodingFromName -EncodingName $TargetEncodingName } else { $null }
+                    $needsEncodingConversion = -not (Test-EncodingMatch -SourceEncoding $sourceEncoding -TargetEncoding $targetEncoding)
+
+                    # Check ending newline if needed
+                    $needsEndingNewline = $false
+                    if ($CheckEndingNewline -and $stream.Length -gt 0)
+                    {
+                        # Check last few bytes for ending newline (encoding-aware)
+                        $bytesToCheck = if ($isUtf32) { 4 } elseif ($isUtf16) { 2 } else { 1 }
+                        $stream.Position = [Math]::Max(0, $stream.Length - ($bytesToCheck * 2))
+                        $endBuffer = New-Object byte[] ($bytesToCheck * 2)
+                        $endBytesRead = $stream.Read($endBuffer, 0, ($bytesToCheck * 2))
+
+                        if ($endBytesRead -gt 0)
+                        {
+                            if ($isUtf32)
+                            {
+                                # Check last 4 bytes for UTF-32 line ending
+                                $lastBytes = $endBuffer[($endBytesRead - 4)..($endBytesRead - 1)]
+                                if ($sourceEncoding.ToString().Contains('BigEndian'))
+                                {
+                                    $needsEndingNewline = -not ($lastBytes[0] -eq 0x00 -and $lastBytes[1] -eq 0x00 -and $lastBytes[2] -eq 0x00 -and ($lastBytes[3] -eq 0x0A -or $lastBytes[3] -eq 0x0D))
+                                }
+                                else
+                                {
+                                    $needsEndingNewline = -not (($lastBytes[0] -eq 0x0A -or $lastBytes[0] -eq 0x0D) -and $lastBytes[1] -eq 0x00 -and $lastBytes[2] -eq 0x00 -and $lastBytes[3] -eq 0x00)
+                                }
+                            }
+                            elseif ($isUtf16)
+                            {
+                                # Check last 2 bytes for UTF-16 line ending
+                                $lastBytes = $endBuffer[($endBytesRead - 2)..($endBytesRead - 1)]
+                                if ($sourceEncoding.ToString().Contains('BigEndian'))
+                                {
+                                    $needsEndingNewline = -not ($lastBytes[0] -eq 0x00 -and ($lastBytes[1] -eq 0x0A -or $lastBytes[1] -eq 0x0D))
+                                }
+                                else
+                                {
+                                    $needsEndingNewline = -not (($lastBytes[0] -eq 0x0A -or $lastBytes[0] -eq 0x0D) -and $lastBytes[1] -eq 0x00)
+                                }
+                            }
+                            else
+                            {
+                                # Check last byte for UTF-8/ASCII line ending
+                                $lastByte = $endBuffer[$endBytesRead - 1]
+                                $needsEndingNewline = $lastByte -ne 10 -and $lastByte -ne 13 # Not LF or CR
+                            }
+                        }
+                    }
+
+                    return @{
+                        IsBinary = $false
+                        SourceEncoding = $sourceEncoding
+                        NeedsLineEndingConversion = $needsLineEndingConversion
+                        NeedsEncodingConversion = $needsEncodingConversion
+                        NeedsEndingNewline = $needsEndingNewline
+                        Error = $null
+                    }
+                }
+                finally
+                {
+                    $stream.Close()
+                }
+            }
+            catch
+            {
+                return @{
+                    IsBinary = $true  # Assume binary if we can't analyze
+                    SourceEncoding = $null
+                    NeedsLineEndingConversion = $false
+                    NeedsEncodingConversion = $false
+                    NeedsEndingNewline = $false
+                    Error = $_.Exception.Message
+                }
+            }
+        }
+
+        function Test-EncodingMatch
+        {
+            param(
+                [System.Text.Encoding]$SourceEncoding,
+                [System.Text.Encoding]$TargetEncoding
+            )
+
+            # If target encoding is null, it means keep original (Auto mode)
+            if ($null -eq $TargetEncoding)
+            {
+                return $true
+            }
+
+            # If both are null, they match
+            if ($null -eq $SourceEncoding -and $null -eq $TargetEncoding)
+            {
+                return $true
+            }
+
+            # If one is null and the other isn't, they don't match
+            if ($null -eq $SourceEncoding -or $null -eq $TargetEncoding)
+            {
+                return $false
+            }
+
+            # Compare encoding type and BOM presence
+            $sourceType = $SourceEncoding.ToString()
+            $targetType = $TargetEncoding.ToString()
+            $sourceBomLength = $SourceEncoding.GetPreamble().Length
+            $targetBomLength = $TargetEncoding.GetPreamble().Length
+
+            return ($sourceType -eq $targetType) -and ($sourceBomLength -eq $targetBomLength)
+        }
+
+        function Test-FileEndsWithNewline
+        {
+            param(
+                [String]$FilePath
+            )
+
+            try
+            {
+                $fileInfo = Get-Item -Path $FilePath -Force
+                if ($fileInfo.Length -eq 0)
+                {
+                    # Empty files don't end with newline
+                    return $false
+                }
+
+                # Use streaming to read just the end of the file to check for line endings
+                $stream = [System.IO.FileStream]::new($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read)
+                try
+                {
+                    # Read the last few bytes to check for line endings
+                    $bytesToCheck = [Math]::Min(4, $fileInfo.Length)
+                    $stream.Seek(-$bytesToCheck, [System.IO.SeekOrigin]::End) | Out-Null
+
+                    $buffer = New-Object byte[] $bytesToCheck
+                    $bytesRead = $stream.Read($buffer, 0, $bytesToCheck)
+
+                    # Check if file ends with common line ending patterns
+                    # LF (0x0A), CRLF (0x0D 0x0A), or CR (0x0D)
+                    if ($bytesRead -gt 0)
+                    {
+                        $lastByte = $buffer[$bytesRead - 1]
+                        if ($lastByte -eq 0x0A)  # LF
+                        {
+                            return $true
+                        }
+                        elseif ($lastByte -eq 0x0D)  # CR
+                        {
+                            return $true
+                        }
+                    }
+
+                    return $false
+                }
+                finally
+                {
+                    $stream.Close()
+                }
+            }
+            catch
+            {
+                Write-Verbose "Error checking file ending for '$FilePath': $($_.Exception.Message)"
+                # If we can't determine, assume it doesn't end with newline for safety
+                return $false
+            }
+        }
+
+        function Convert-SingleFileLineEnding
+        {
+            param(
+                [String]$FilePath,
+                [String]$TargetLineEnding,
+                [System.Text.Encoding]$SourceEncoding,
+                [System.Text.Encoding]$TargetEncoding = $null,
+                [Boolean]$ConvertLineEndings = $true,
+                [Boolean]$EnsureEndingNewline = $false,
+                [Boolean]$PreserveTimestamps = $false,
+                [Hashtable]$OriginalTimestamps = $null
+            )
+
+            $tempFilePath = "$FilePath.$([System.IO.Path]::GetRandomFileName()).tmp"
+            $originalLfCount = 0
+            $originalCrlfCount = 0
+            $newLfCount = 0
+            $newCrlfCount = 0
+            $endingNewlineAdded = $false
+
+            # Check if file originally ends with newline (before any conversion)
+            $originallyEndsWithNewline = Test-FileEndsWithNewline -FilePath $FilePath
+
+            # Use pre-captured timestamps if provided, otherwise capture them now
+            if ($OriginalTimestamps)
+            {
+                $originalTimestamps = $OriginalTimestamps
+                Write-Verbose "Using pre-captured timestamps for '$FilePath'"
+            }
+            elseif ($PreserveTimestamps)
+            {
+                try
+                {
+                    $fileInfo = Get-Item -Path $FilePath -Force
+                    $originalTimestamps = @{
+                        CreationTime = $fileInfo.CreationTime
+                        LastWriteTime = $fileInfo.LastWriteTime
+                    }
+                    Write-Verbose "Captured original timestamps for '$FilePath'"
+                }
+                catch
+                {
+                    Write-Verbose "Failed to capture timestamps for '$FilePath': $($_.Exception.Message)"
+                    $originalTimestamps = $null
+                }
+            }
+            else
+            {
+                $originalTimestamps = $null
+            }
+
+            # Use source encoding if no target encoding specified
+            $outputEncoding = if ($TargetEncoding) { $TargetEncoding } else { $SourceEncoding }
+
+            try
+            {
+                # Create streams for reading and writing
+                $reader = New-Object System.IO.StreamReader($FilePath, $SourceEncoding)
+                $writer = New-Object System.IO.StreamWriter($tempFilePath, $false, $outputEncoding)
+
+                try
+                {
+                    $buffer = New-Object char[] 8192
+                    $lineBuffer = New-Object System.Text.StringBuilder
+                    $pendingCR = $false
+
+                    while ($true)
+                    {
+                        $charsRead = $reader.Read($buffer, 0, $buffer.Length)
+                        if ($charsRead -eq 0) { break }
+
+                        for ($i = 0; $i -lt $charsRead; $i++)
+                        {
+                            $char = $buffer[$i]
+
+                            # Handle CR that may have been at the end of the previous read buffer.
+                            if ($pendingCR)
+                            {
+                                if ($char -eq "`n")
+                                {
+                                    # CRLF sequence split across read boundaries.
+                                    $originalCrlfCount++
+
+                                    $writer.Write($lineBuffer.ToString())
+                                    if ($ConvertLineEndings)
+                                    {
+                                        $writer.Write($TargetLineEnding)
+                                        if ($TargetLineEnding -eq "`n")
+                                        {
+                                            $newLfCount++
+                                        }
+                                        else
+                                        {
+                                            $newCrlfCount++
+                                        }
+                                    }
+                                    else
+                                    {
+                                        # Preserve original CRLF
+                                        $writer.Write("`r`n")
+                                        $newCrlfCount++
+                                    }
+
+                                    $lineBuffer.Clear() | Out-Null
+                                    $pendingCR = $false
+                                    continue
+                                }
+                                else
+                                {
+                                    # Previous CR was standalone.
+                                    $originalLfCount++
+
+                                    $writer.Write($lineBuffer.ToString())
+                                    if ($ConvertLineEndings)
+                                    {
+                                        $writer.Write($TargetLineEnding)
+                                        if ($TargetLineEnding -eq "`n")
+                                        {
+                                            $newLfCount++
+                                        }
+                                        else
+                                        {
+                                            $newCrlfCount++
+                                        }
+                                    }
+                                    else
+                                    {
+                                        # Preserve original CR
+                                        $writer.Write("`r")
+                                        $newLfCount++
+                                    }
+
+                                    $lineBuffer.Clear() | Out-Null
+                                    $pendingCR = $false
+                                }
+                            }
+
+                            if ($char -eq "`r")
+                            {
+                                # Check if next character is LF (CRLF sequence).
+                                if ($i + 1 -lt $charsRead)
+                                {
+                                    if ($buffer[$i + 1] -eq "`n")
+                                    {
+                                        $originalCrlfCount++
+                                        $i++  # Skip the LF character
+
+                                        # Write line with appropriate ending
+                                        $writer.Write($lineBuffer.ToString())
+                                        if ($ConvertLineEndings)
+                                        {
+                                            $writer.Write($TargetLineEnding)
+                                            if ($TargetLineEnding -eq "`n")
+                                            {
+                                                $newLfCount++
+                                            }
+                                            else
+                                            {
+                                                $newCrlfCount++
+                                            }
+                                        }
+                                        else
+                                        {
+                                            # Preserve original CRLF
+                                            $writer.Write("`r`n")
+                                            $newCrlfCount++
+                                        }
+                                    }
+                                    else
+                                    {
+                                        # Standalone CR (treat as line ending)
+                                        $originalLfCount++
+
+                                        # Write line with appropriate ending
+                                        $writer.Write($lineBuffer.ToString())
+                                        if ($ConvertLineEndings)
+                                        {
+                                            $writer.Write($TargetLineEnding)
+                                            if ($TargetLineEnding -eq "`n")
+                                            {
+                                                $newLfCount++
+                                            }
+                                            else
+                                            {
+                                                $newCrlfCount++
+                                            }
+                                        }
+                                        else
+                                        {
+                                            # Preserve original CR
+                                            $writer.Write("`r")
+                                            $newLfCount++
+                                        }
+                                    }
+
+                                    $lineBuffer.Clear() | Out-Null
+                                }
+                                else
+                                {
+                                    # CR at the end of this buffer; defer until next read.
+                                    $pendingCR = $true
+                                }
+                            }
+                            elseif ($char -eq "`n")
+                            {
+                                # Standalone LF
+                                $originalLfCount++
+
+                                $writer.Write($lineBuffer.ToString())
+                                if ($ConvertLineEndings)
+                                {
+                                    $writer.Write($TargetLineEnding)
+                                    if ($TargetLineEnding -eq "`n")
+                                    {
+                                        $newLfCount++
+                                    }
+                                    else
+                                    {
+                                        $newCrlfCount++
+                                    }
+                                }
+                                else
+                                {
+                                    # Preserve original LF
+                                    $writer.Write("`n")
+                                    $newLfCount++
+                                }
+
+                                $lineBuffer.Clear() | Out-Null
+                            }
+                            else
+                            {
+                                $lineBuffer.Append($char) | Out-Null
+                            }
+                        }
+                    }
+
+                    # If the file ended with a CR at buffer boundary, treat it as standalone CR.
+                    if ($pendingCR)
+                    {
+                        $originalLfCount++
+
+                        $writer.Write($lineBuffer.ToString())
+                        if ($ConvertLineEndings)
+                        {
+                            $writer.Write($TargetLineEnding)
+                            if ($TargetLineEnding -eq "`n")
+                            {
+                                $newLfCount++
+                            }
+                            else
+                            {
+                                $newCrlfCount++
+                            }
+                        }
+                        else
+                        {
+                            # Preserve original CR
+                            $writer.Write("`r")
+                            $newLfCount++
+                        }
+
+                        $lineBuffer.Clear() | Out-Null
+                    }
+
+                    # Write any remaining content
+                    if ($lineBuffer.Length -gt 0)
+                    {
+                        $writer.Write($lineBuffer.ToString())
+                    }
+
+                    # Add ending newline if requested and file doesn't already end with one
+                    if ($EnsureEndingNewline)
+                    {
+                        # Determine if we need to add an ending newline
+                        $needsEndingNewline = $false
+
+                        # If file originally didn't end with newline, we need to add one
+                        if (-not $originallyEndsWithNewline)
+                        {
+                            $needsEndingNewline = $true
+                        }
+
+                        if ($needsEndingNewline)
+                        {
+                            $writer.Write($TargetLineEnding)
+                            $endingNewlineAdded = $true
+
+                            # Update counts
+                            if ($TargetLineEnding -eq "`n")
+                            {
+                                $newLfCount++
+                            }
+                            else
+                            {
+                                $newCrlfCount++
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    $reader.Close()
+                    $writer.Close()
+                }
+
+                # Replace original file with converted file
+                if ($Force -or -not (Get-Item -Path $FilePath -Force).IsReadOnly)
+                {
+                    Move-Item -Path $tempFilePath -Destination $FilePath -Force
+
+                    # Restore original timestamps if preservation was requested and we captured them
+                    if ($PreserveTimestamps -and $originalTimestamps)
+                    {
+                        try
+                        {
+                            $fileInfo = Get-Item -Path $FilePath -Force
+                            $fileInfo.CreationTime = $originalTimestamps.CreationTime
+                            $fileInfo.LastWriteTime = $originalTimestamps.LastWriteTime
+                            Write-Verbose "Restored original timestamps for '$FilePath'"
+                        }
+                        catch
+                        {
+                            Write-Verbose "Failed to restore timestamps for '$FilePath': $($_.Exception.Message)"
+                        }
+                    }
+                }
+                else
+                {
+                    Remove-Item -Path $tempFilePath -Force -ErrorAction SilentlyContinue
+                    throw 'File is read-only. Use -Force to overwrite read-only files.'
+                }
+
+                return [PSCustomObject]@{
+                    FilePath = $FilePath
+                    LineEnding = if ($TargetLineEnding -eq "`n") { 'LF' } elseif ($TargetLineEnding -eq "`r`n") { 'CRLF' } else { 'Unknown' }
+                    OriginalLF = $originalLfCount
+                    OriginalCRLF = $originalCrlfCount
+                    NewLF = $newLfCount
+                    NewCRLF = $newCrlfCount
+                    SourceEncoding = $SourceEncoding.EncodingName
+                    TargetEncoding = $outputEncoding.EncodingName
+                    EncodingChanged = $SourceEncoding.ToString() -ne $outputEncoding.ToString() -or $SourceEncoding.GetPreamble().Length -ne $outputEncoding.GetPreamble().Length
+                    EndingNewlineAdded = $endingNewlineAdded
+                    Success = $true
+                    Error = $null
+                    Skipped = $false
+                    Converted = $ConvertLineEndings
+                }
+            }
+            catch
+            {
+                # Clean up temp file on error
+                if (Test-Path $tempFilePath)
+                {
+                    Remove-Item -Path $tempFilePath -Force -ErrorAction SilentlyContinue
+                }
+
+                return [PSCustomObject]@{
+                    FilePath = $FilePath
+                    LineEnding = if ($TargetLineEnding -eq "`n") { 'LF' } elseif ($TargetLineEnding -eq "`r`n") { 'CRLF' } else { 'Unknown' }
+                    OriginalLF = 0
+                    OriginalCRLF = 0
+                    NewLF = 0
+                    NewCRLF = 0
+                    SourceEncoding = if ($SourceEncoding) { $SourceEncoding.EncodingName } else { $null }
+                    TargetEncoding = if ($outputEncoding) { $outputEncoding.EncodingName } else { $null }
+                    EncodingChanged = $false
+                    EndingNewlineAdded = $false
+                    Success = $false
+                    Error = $_.Exception.Message
+                    Skipped = $false
+                    Converted = $false
+                }
+            }
+        }
+    }
+
+    process
+    {
+        foreach ($currentPath in $Path)
+        {
+            # Normalize path
+            $resolvedPath = $PSCmdlet.SessionState.Path.GetUnresolvedProviderPathFromPSPath($currentPath)
+
+            if (-not (Test-Path $resolvedPath))
+            {
+                Write-Error "Path not found: $resolvedPath"
+                continue
+            }
+
+            $item = Get-Item -Path $resolvedPath -Force
+
+            if ($item.PSIsContainer)
+            {
+                # Process directory
+                Write-Verbose "Processing directory: $resolvedPath"
+
+                $getChildItemParams = @{
+                    Path = $resolvedPath
+                    File = $true
+                    Force = $true
+                    ErrorAction = 'SilentlyContinue'
+                }
+
+                if ($Recurse)
+                {
+                    $getChildItemParams.Recurse = $true
+                }
+
+                $files = Get-ChildItem @getChildItemParams
+
+                # Apply include filters (optimized)
+                if ($Include.Count -gt 0)
+                {
+                    $files = $files | Where-Object {
+                        $fileName = $_.Name
+                        foreach ($pattern in $Include)
+                        {
+                            if ($fileName -like $pattern)
+                            {
+                                return $true
+                            }
+                        }
+                        return $false
+                    }
+                }
+
+                # Apply exclude filters
+                if ($Exclude.Count -gt 0)
+                {
+                    $files = $files | Where-Object {
+                        $file = $_
+                        $shouldExclude = $false
+                        foreach ($excludePattern in $Exclude)
+                        {
+                            # Check file name, relative path, and directory path for exclusion
+                            $relativePath = $file.FullName.Substring($resolvedPath.Length).TrimStart('\', '/')
+                            if ($file.Name -like $excludePattern -or
+                                $relativePath -like "*$excludePattern*" -or
+                                $file.DirectoryName -like "*$excludePattern*" -or
+                                $file.Directory.Name -like $excludePattern)
+                            {
+                                $shouldExclude = $true
+                                break
+                            }
+                        }
+                        -not $shouldExclude
+                    }
+                }
+
+                foreach ($file in $files)
+                {
+                    # Capture original timestamps BEFORE any file analysis to prevent access time changes
+                    $originalTimestamps = $null
+                    if ($PreserveTimestamps)
+                    {
+                        try
+                        {
+                            # Use existing FileInfo object from Get-ChildItem instead of redundant Get-Item call
+                            $originalTimestamps = @{
+                                CreationTime = $file.CreationTime
+                                LastWriteTime = $file.LastWriteTime
+                            }
+                            Write-Verbose "Captured original timestamps for '$($file.FullName)' before analysis"
+                        }
+                        catch
+                        {
+                            Write-Verbose "Failed to capture timestamps for '$($file.FullName)': $($_.Exception.Message)"
+                            $originalTimestamps = $null
+                        }
+                    }
+
+                    # Perform combined file analysis for optimal performance (single file read)
+                    $analysis = Get-FileAnalysis -FilePath $file.FullName -TargetLineEnding $targetLineEnding -TargetEncodingName $Encoding -CheckEndingNewline $EnsureEndingNewline.IsPresent
+
+                    if ($analysis.Error)
+                    {
+                        # Surface analysis failures as non-terminating errors so caller ErrorAction/ErrorVariable capture them (warnings would bypass these settings)
+                        Write-Error -Message "Error analyzing file '$($file.FullName)': $($analysis.Error)" -Category ReadError -TargetObject $file.FullName
+                        continue
+                    }
+
+                    if ($analysis.IsBinary)
+                    {
+                        Write-Warning "Skipping binary file: $($file.FullName)"
+                        continue
+                    }
+
+                    # Extract analysis results
+                    $needsLineEndingConversion = $analysis.NeedsLineEndingConversion
+                    $needsEncodingConversion = $analysis.NeedsEncodingConversion
+                    $needsEndingNewline = $analysis.NeedsEndingNewline
+                    $sourceEncoding = $analysis.SourceEncoding
+                    $targetEncoding = if ($needsEncodingConversion) { Get-EncodingFromName -EncodingName $Encoding } else { $null }
+
+                    if ($needsLineEndingConversion -or $needsEncodingConversion -or $needsEndingNewline)
+                    {
+                        # Determine what needs to be converted
+                        $conversionType = @()
+                        if ($needsLineEndingConversion) { $conversionType += "line endings to $LineEnding" }
+                        if ($needsEncodingConversion) { $conversionType += "encoding to $Encoding" }
+                        if ($needsEndingNewline) { $conversionType += 'add ending newline' }
+                        $conversionDescription = $conversionType -join ' and '
+
+                        if ($PSCmdlet.ShouldProcess($file.FullName, "Convert $conversionDescription"))
+                        {
+                            Write-Verbose "Processing file: $($file.FullName)"
+
+                            # Only use target encoding if encoding conversion is needed
+                            $actualTargetEncoding = if ($needsEncodingConversion) { $targetEncoding } else { $null }
+                            $result = Convert-SingleFileLineEnding -FilePath $file.FullName -TargetLineEnding $targetLineEnding -SourceEncoding $sourceEncoding -TargetEncoding $actualTargetEncoding -ConvertLineEndings $needsLineEndingConversion -EnsureEndingNewline $EnsureEndingNewline.IsPresent -PreserveTimestamps $PreserveTimestamps.IsPresent -OriginalTimestamps $originalTimestamps
+
+                            if ($PassThru)
+                            {
+                                $null = $processedFiles.Add($result)
+                            }
+
+                            if ($result.Success)
+                            {
+                                $encodingInfo = if ($result.EncodingChanged) { " Encoding: $($result.SourceEncoding)~>$($result.TargetEncoding)" } else { '' }
+                                Write-Verbose "Successfully converted '$($file.FullName)' (LF: $($result.OriginalLF)~>$($result.NewLF), CRLF: $($result.OriginalCRLF)~>$($result.NewCRLF))$encodingInfo"
+                            }
+                            else
+                            {
+                                Write-Error "Failed to convert '$($file.FullName)': $($result.Error)"
+                            }
+                        }
+                    }
+                    else
+                    {
+                        # Determine the target encoding name for display purposes
+                        $targetEncodingName = if ($Encoding -eq 'Auto') { 'Auto' } else { $Encoding }
+
+                        if ($PSCmdlet.ShouldProcess($file.FullName, "Skip file - already has correct line endings ($LineEnding), encoding ($targetEncodingName), and ending newline"))
+                        {
+                            Write-Verbose "Skipping '$($file.FullName)' - already has correct line endings, encoding, and ending newline"
+
+                            if ($PassThru)
+                            {
+                                # Return info showing no changes were needed
+                                $result = [PSCustomObject]@{
+                                    FilePath = $file.FullName
+                                    LineEnding = $LineEnding
+                                    OriginalLF = 0
+                                    OriginalCRLF = 0
+                                    NewLF = 0
+                                    NewCRLF = 0
+                                    SourceEncoding = $sourceEncoding.EncodingName
+                                    TargetEncoding = $sourceEncoding.EncodingName
+                                    EncodingChanged = $false
+                                    EndingNewlineAdded = $false
+                                    Success = $true
+                                    Error = $null
+                                    Skipped = $true
+                                    Converted = $false
+                                }
+                                $null = $processedFiles.Add($result)
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                # Process single file
+                # Capture original timestamps BEFORE any file analysis to prevent access time changes
+                $originalTimestamps = $null
+                if ($PreserveTimestamps)
+                {
+                    try
+                    {
+                        # Use the existing item object instead of redundant Get-Item call
+                        $originalTimestamps = @{
+                            CreationTime = $item.CreationTime
+                            LastWriteTime = $item.LastWriteTime
+                        }
+                        Write-Verbose "Captured original timestamps for '$resolvedPath' before analysis"
+                    }
+                    catch
+                    {
+                        Write-Verbose "Failed to capture timestamps for '$resolvedPath': $($_.Exception.Message)"
+                        $originalTimestamps = $null
+                    }
+                }
+
+                # Perform combined file analysis for optimal performance (single file read)
+                $analysis = Get-FileAnalysis -FilePath $resolvedPath -TargetLineEnding $targetLineEnding -TargetEncodingName $Encoding -CheckEndingNewline $EnsureEndingNewline.IsPresent
+
+                if ($analysis.Error)
+                {
+                    # Surface analysis failures as non-terminating errors so caller ErrorAction/ErrorVariable capture them (warnings would bypass these settings)
+                    Write-Error -Message "Error analyzing file '$resolvedPath': $($analysis.Error)" -Category ReadError -TargetObject $resolvedPath
+                    continue
+                }
+
+                if ($analysis.IsBinary)
+                {
+                    Write-Warning "Skipping binary file: $resolvedPath"
+                    continue
+                }
+
+                # Extract analysis results
+                $needsLineEndingConversion = $analysis.NeedsLineEndingConversion
+                $needsEncodingConversion = $analysis.NeedsEncodingConversion
+                $needsEndingNewline = $analysis.NeedsEndingNewline
+                $sourceEncoding = $analysis.SourceEncoding
+                $targetEncoding = if ($needsEncodingConversion) { Get-EncodingFromName -EncodingName $Encoding } else { $null }
+
+                if ($needsLineEndingConversion -or $needsEncodingConversion -or $needsEndingNewline)
+                {
+                    # Determine what needs to be converted
+                    $conversionType = @()
+                    if ($needsLineEndingConversion) { $conversionType += "line endings to $LineEnding" }
+                    if ($needsEncodingConversion) { $conversionType += "encoding to $Encoding" }
+                    if ($needsEndingNewline) { $conversionType += 'add ending newline' }
+                    $conversionDescription = $conversionType -join ' and '
+
+                    if ($PSCmdlet.ShouldProcess($resolvedPath, "Convert $conversionDescription"))
+                    {
+                        Write-Verbose "Processing file: $resolvedPath"
+
+                        # Only use target encoding if encoding conversion is needed
+                        $actualTargetEncoding = if ($needsEncodingConversion) { $targetEncoding } else { $null }
+                        $result = Convert-SingleFileLineEnding -FilePath $resolvedPath -TargetLineEnding $targetLineEnding -SourceEncoding $sourceEncoding -TargetEncoding $actualTargetEncoding -ConvertLineEndings $needsLineEndingConversion -EnsureEndingNewline $EnsureEndingNewline.IsPresent -PreserveTimestamps $PreserveTimestamps.IsPresent -OriginalTimestamps $originalTimestamps
+
+                        if ($PassThru)
+                        {
+                            $null = $processedFiles.Add($result)
+                        }
+
+                        if ($result.Success)
+                        {
+                            $encodingInfo = if ($result.EncodingChanged) { " Encoding: $($result.SourceEncoding)~>$($result.TargetEncoding)" } else { '' }
+                            Write-Verbose "Successfully converted '$resolvedPath' (LF: $($result.OriginalLF)~>$($result.NewLF), CRLF: $($result.OriginalCRLF)~>$($result.NewCRLF))$encodingInfo"
+                        }
+                        else
+                        {
+                            Write-Error "Failed to convert '$resolvedPath': $($result.Error)"
+                        }
+                    }
+                }
+                else
+                {
+                    # Determine the target encoding name for display purposes
+                    $targetEncodingName = if ($Encoding -eq 'Auto') { 'Auto' } else { $Encoding }
+
+                    if ($PSCmdlet.ShouldProcess($resolvedPath, "Skip file - already has correct line endings ($LineEnding), encoding ($targetEncodingName), and ending newline"))
+                    {
+                        Write-Verbose "Skipping '$resolvedPath' - already has correct line endings, encoding, and ending newline"
+
+                        if ($PassThru)
+                        {
+                            # Return info showing no changes were needed
+                            $result = [PSCustomObject]@{
+                                FilePath = $resolvedPath
+                                LineEnding = $LineEnding
+                                OriginalLF = 0
+                                OriginalCRLF = 0
+                                NewLF = 0
+                                NewCRLF = 0
+                                SourceEncoding = $sourceEncoding.EncodingName
+                                TargetEncoding = $sourceEncoding.EncodingName
+                                EncodingChanged = $false
+                                EndingNewlineAdded = $false
+                                Success = $true
+                                Error = $null
+                                Skipped = $true
+                                Converted = $false
+                            }
+                            $null = $processedFiles.Add($result)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    end
+    {
+        if ($PassThru)
+        {
+            # Return the processed files array
+            return @($processedFiles)
+        }
+
+        Write-Verbose 'Line ending conversion completed'
+    }
+}

@@ -16,9 +16,10 @@ Describe 'Every script parses' {
         $null = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$errors)
         $errors | Should -BeNullOrEmpty
     }
-    It '<Rel> is ASCII (safe for Windows PowerShell 5.1)' -ForEach $AllScripts {
+    It '<Rel> is ASCII, or UTF-8 with a BOM (safe for Windows PowerShell 5.1)' -ForEach $AllScripts {
         $bytes = [IO.File]::ReadAllBytes($Path)
-        ($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0
+        $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+        if (-not $hasBom) { ($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0 }
     }
 }
 
@@ -34,6 +35,10 @@ Describe 'Function file conventions' {
         . $Path
         (Get-Help $Name).Synopsis | Should -Not -BeNullOrEmpty
         (Get-Help $Name).Synopsis | Should -Not -Match '^\s*\S+\s*\[?$|^TODO'
+    }
+    It '<Name> loads through its stub without errors' -ForEach $FunctionFiles {
+        . (Join-Path (Split-Path $PSScriptRoot -Parent) 'profile.ps1')
+        { Import-ProfileFunction -Name $Name } | Should -Not -Throw
     }
 }
 

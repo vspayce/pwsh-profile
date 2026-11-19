@@ -1,0 +1,1650 @@
+# Source: jonlabelle/pwsh-profile@b888ab6 (MIT, Copyright (c) Jon LaBelle) - Functions/Utilities/Search-DelimitedFile.ps1
+# Synced by tools/Sync-Upstream.ps1 - edit upstream or remove this file from the sync list before changing it.
+function Search-DelimitedFile
+{
+    <#
+    .SYNOPSIS
+        Searches rows in character-delimited files using one or more column criteria.
+
+    .DESCRIPTION
+        Searches CSV, TSV, and other character-delimited files and returns rows whose fields
+        match the supplied criteria. Criteria are supplied as a dictionary whose keys are
+        column names or zero-based column indexes. Every criterion must match the same row by
+        default; use -Any to return a row when at least one criterion matches.
+
+        Regular expressions are used by default. Use -Literal for substring matching without
+        regular expression interpretation, and combine -Literal with -Exact to require an
+        exact field value. Matching is case-insensitive unless -CaseSensitive is specified.
+
+        Files with headers retain their original column names, which must be non-empty. Duplicate
+        header names are made unique by appending numeric suffixes to each duplicate group, such as
+        File1 and File2. For files without headers, use -NoHeader to generate Column0, Column1,
+        and so on, or use -Header to assign custom names. Use -MatchColumnsOnly to return only the
+        columns referenced by the criteria.
+
+        InputFormat controls whether each file is processed automatically (the default), strictly
+        as CSV, or strictly as TSV. In Auto mode, tab is inferred for files with .tsv or .tab
+        extensions when -Delimiter is omitted. All other files use comma. If the default comma
+        delimiter leaves a tab-containing first record as one column, the file is retried as
+        tab-delimited.
+        An explicit delimiter applies to every input file and disables delimiter inference.
+
+    .PARAMETER Path
+        One or more file paths, directory paths, or wildcard patterns. Paths can also be supplied
+        through the pipeline or by property name. Directory searches are non-recursive unless
+        -Recurse is specified. Only FileSystem provider paths are supported.
+        The default path if not provided is the current working directory.
+
+    .PARAMETER Criteria
+        A dictionary that maps column names or zero-based integer column indexes to patterns.
+        Column-name lookup is case-insensitive. A criterion value can be one value or an array of
+        alternative values. When an array is supplied, any pattern in that array can satisfy that
+        column's criterion.
+
+        Use integer keys for index-based criteria, for example @{ 0 = 'Alice'; 2 = '^Open$' }.
+        String keys are treated as column names, even when the string contains only digits. When
+        file headers are duplicated, use the generated suffixed names, such as File1 and File2, or
+        use integer keys.
+
+    .PARAMETER Delimiter
+        The character separating fields. When omitted, .tsv and .tab files use a tab and all
+        other files use a comma. Supply this parameter for pipe-delimited, semicolon-delimited,
+        or other character-delimited formats. Cannot be combined with InputFormat CSV or TSV.
+
+    .PARAMETER InputFormat
+        Determines how input files are parsed. Auto (the default) preserves delimiter inference,
+        including extension and tab-header detection. CSV always uses a comma, and TSV always uses
+        a tab, regardless of file extension. CSV and TSV cannot be combined with -Delimiter.
+
+    .PARAMETER Filter
+        One or more wildcard file-name patterns used when Path identifies a directory. The
+        default patterns are *.csv, *.tsv, and *.tab. Explicit file paths are not restricted
+        by Filter.
+
+    .PARAMETER Recurse
+        Searches all subdirectories when Path identifies a directory. Directory searches are
+        non-recursive by default.
+
+    .PARAMETER Exclude
+        Directory-name wildcard patterns to exclude from recursive searches. The default
+        exclusions are node_modules and the .git directory. This parameter has no effect unless
+        -Recurse is specified.
+
+    .PARAMETER NoHeader
+        Indicates that the first record contains data rather than column names. Generated column
+        names are zero-based: Column0, Column1, and so on. Cannot be combined with -Header.
+
+    .PARAMETER Header
+        Custom column names for a file whose first record contains data. The number of names must
+        match the number of fields in the first record. Header names must be non-empty and unique
+        case-insensitively. Cannot be combined with -NoHeader.
+
+    .PARAMETER Literal
+        Treats every criterion pattern as a literal substring instead of a regular expression.
+
+    .PARAMETER Exact
+        Requires an entire field to equal a literal criterion. Requires -Literal.
+
+    .PARAMETER CaseSensitive
+        Performs case-sensitive matching. Matching is case-insensitive by default.
+
+    .PARAMETER Any
+        Returns a row when any column criterion matches. By default, every criterion must match
+        the same row.
+
+    .PARAMETER MatchColumnsOnly
+        Returns only the columns referenced by Criteria. Column order follows the input file,
+        regardless of the order of keys in the criteria dictionary.
+
+    .PARAMETER IncludeFileName
+        Adds a FileName property containing the leaf name of the source file to every result.
+        The command rejects this option when an input file already contains a FileName column.
+
+    .PARAMETER IncludeFilePath
+        Adds a FilePath property containing the absolute source file path to every result.
+        The command rejects this option when an input file already contains a FilePath column.
+
+    .PARAMETER IncludeRowNumber
+        Adds a RowNumber property containing the one-based delimited-record number from the
+        source file to every result. Header rows count as row 1 when header parsing is enabled.
+        If the input file already contains a RowNumber column, the added property uses the next
+        available suffixed name, such as RowNumber1 or RowNumber2.
+
+    .PARAMETER Encoding
+        Specifies the input file encoding. The default is UTF8. Accepted values are compatible
+        with both Windows PowerShell 5.1 and PowerShell Core. Output written through OutputPath
+        uses UTF-8 regardless of this setting.
+
+    .PARAMETER OutputPath
+        Writes all matching rows to one output file instead of returning them to the pipeline.
+        Unless OutputBySourceFile is supplied, only the .csv, .tsv, and .json file extensions are
+        supported, and the extension determines the serialization format. Existing files are
+        overwritten. JSON output is always an array; CSV and TSV output is an empty file when no
+        rows match. The output file cannot also be an explicit input file, and an existing output
+        file discovered through a directory or wildcard search is skipped as input before it is
+        overwritten.
+
+        When OutputBySourceFile is supplied, OutputPath identifies the target directory. The
+        directory is created when it does not exist. Each valid source file writes one delimited
+        output file in that directory using the source file's leaf name. Source files with no
+        matches write empty output files.
+
+        CSV and TSV output preserve source header text, including duplicate header names. Pipeline
+        and JSON output continue to use generated unique property names for duplicate headers.
+        When aggregate CSV or TSV output combines files with different result columns, the output
+        uses their ordered union. Columns missing from a source row are written as empty fields.
+
+    .PARAMETER OutputFileNameSuffix
+        Appends text to output file names before the file extension. Requires OutputPath. For
+        aggregate output, the suffix is applied to the OutputPath file name. With OutputBySourceFile,
+        the suffix is applied to each source file's leaf name.
+
+    .PARAMETER OutputBySourceFile
+        Writes matched rows to separate files by source file instead of aggregating all matches into
+        one output file. Requires OutputPath. OutputPath identifies the target directory, which is
+        created when needed. Output files use each source file's leaf name and the delimiter used to
+        read that source.
+
+    .PARAMETER NoEmptyOutputFiles
+        Skips writing output files that would contain no matched records. For aggregate output, the
+        OutputPath target is not created when no rows match, and an existing output file is removed.
+        With OutputBySourceFile, source files with no matches do not create per-source output files,
+        and existing per-source output files are removed.
+
+    .PARAMETER UseQuotes
+        Controls quoting for CSV and TSV output files. AsNeeded quotes only fields that contain
+        the output delimiter, double quotes, or line breaks. Always quotes every header and field.
+        Never writes headers and fields without quoting or escaping. The default is AsNeeded.
+        This parameter requires OutputPath and does not apply to JSON output.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile -Path './users.csv' -Criteria @{ Status = '^Active$'; City = '^Boston$' }
+
+        Returns complete rows where both Status and City match the regular expressions.
+
+        Name    Status  Department  City
+        ----    ------  ----------  ------
+        Alice   Active  Engineering Boston
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './users.csv' @{ Name = 'Smith'; Department = 'Sales' } -Literal
+
+        Returns rows where Name contains Smith and Department contains Sales as literal text.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './users.csv' @{ Status = 'Active' } -Literal -Exact -CaseSensitive
+
+        Returns rows whose Status field is exactly Active, including case.
+
+        Name    Status  Department  City
+        ----    ------  ----------  -------
+        Alice   Active  Engineering Boston
+        Bob     Active  Marketing   Seattle
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './events.tsv' @{ Level = 'error|critical'; Message = 'timeout' }
+
+        Infers a tab delimiter and returns rows where both regular expressions match.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './events.log' @{ Level = 'error|critical' } -InputFormat TSV
+
+        Parses a tab-separated file whose extension does not identify its format.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './data.txt' @{ 0 = '^A'; 2 = 'done' } -Delimiter '|' -NoHeader
+
+        Searches a headerless pipe-delimited file by zero-based column index.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './duplicate-headers.tsv' @{ File1 = 'Before'; File2 = 'After' } -Literal
+
+        Searches a file with duplicate File headers using the generated File1 and File2 column names.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './data.txt' @{ Name = 'Alice'; State = 'NY' } -Delimiter ';' -Header Name,Age,State -Literal
+
+        Applies custom names to a headerless semicolon-delimited file and searches two columns.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './orders.csv' @{ Status = @('Pending', 'Backorder') } -Literal -Exact
+
+        Returns rows whose Status exactly equals either Pending or Backorder.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './audit.csv' @{ User = '^admin'; Action = 'delete' } -Any
+
+        Returns rows where either the User or Action regular expression matches.
+
+        User    Action  Timestamp
+        ----    ------  -------------------
+        admin   login   2024-01-15 09:12:44
+        jsmith  delete  2024-01-15 10:05:22
+        admin   delete  2024-01-15 11:33:01
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './logs/*.csv' @{ Severity = 'warning|error'; Host = '^web-' } -MatchColumnsOnly
+
+        Searches multiple files and returns only Severity and Host from matching rows.
+
+    .EXAMPLE
+        PS > Get-ChildItem './exports/*.csv' | Search-DelimitedFile -Criteria @{ Region = '^West$' } -IncludeFileName
+
+        Accepts file objects through the pipeline and adds the source file name to each result.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './exports/*.csv' @{ Result = '^Failed$' } -IncludeFileName -IncludeFilePath
+
+        Adds both the source file name and absolute file path to each matched row.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './exports/*.csv' @{ Result = '^Failed$' } -IncludeFileName -IncludeRowNumber
+
+        Adds the source file name and one-based source row number to each matched row.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './inventory.csv', './inventory-archive.csv' @{ Sku = '^ABC-\d+$' }
+
+        Searches more than one file using the same regular expression criterion.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './exports' @{ Status = '^Active$' } -Recurse -Filter '*.csv', '*.tsv' -IncludeFileName
+
+        Recursively searches CSV and TSV files beneath exports and adds each matching file name.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './logs' @{ 0 = 'error'; 3 = 'timeout' } -Recurse -Filter '*.txt', '*.log' -Delimiter '|' -NoHeader -Literal
+
+        Recursively searches pipe-delimited text and log files by zero-based column index.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './exports' @{ Status = '^Active$' } -Recurse -OutputPath './active-records.csv'
+
+        Writes all matching rows from the directory tree to one CSV file.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './events.tsv' @{ Level = 'error|critical' } -IncludeFileName -OutputPath './events.json'
+
+        Writes matching rows, including their source file name, to a JSON array.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './events.tsv' @{ Level = 'error|critical' } -OutputPath './errors.tsv'
+
+        Writes matching rows to a tab-separated output file.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './exports' @{ Status = '^Active$' } -Recurse -OutputPath './matches' -OutputBySourceFile
+
+        Writes one output file per source file in the matches directory, preserving each source
+        file name.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './exports' @{ Status = '^Active$' } -Recurse -OutputPath './matches' -OutputBySourceFile -OutputFileNameSuffix '-active'
+
+        Writes one output file per source file in the matches directory, appending -active to
+        each output file name before the extension.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './users.csv' @{ Status = '^Disabled$' } -OutputPath './disabled.csv' -NoEmptyOutputFiles
+
+        Writes disabled.csv only when at least one row matches.
+
+    .EXAMPLE
+        PS > Search-DelimitedFile './users.csv' @{ Status = '^Active$' } -OutputPath './active.csv' -UseQuotes Never
+
+        Writes matching rows to a CSV file without wrapping output headers or values in quotes.
+
+    .OUTPUTS
+        System.Management.Automation.PSCustomObject
+            A new object containing each matched row, optionally limited to searched columns and
+            augmented with source file information. No objects are returned when OutputPath is
+            specified.
+
+    .NOTES
+        The parser follows Import-Csv quoting rules, including escaped quotes and delimiters inside
+        quoted fields. Delimiters are limited to a single character.
+
+        TSV files use tabs as delimiters. Adjacent tabs are valid when they represent empty fields;
+        collapse repeated tabs only when you know they are accidental padding, because doing so
+        changes column positions.
+
+        Author: Jon LaBelle
+        License: MIT
+        Source: https://github.com/jonlabelle/pwsh-profile/blob/main/Functions/Utilities/Search-DelimitedFile.ps1
+
+    .LINK
+        https://github.com/jonlabelle/pwsh-profile/blob/main/Functions/Utilities/Search-DelimitedFile.ps1
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('FullName')]
+        [ValidateNotNullOrEmpty()]
+        [String[]]$Path = (Get-Location),
+
+        [Parameter(Mandatory, Position = 1)]
+        [ValidateNotNull()]
+        [System.Collections.IDictionary]$Criteria,
+
+        [Parameter()]
+        [Char]$Delimiter,
+
+        [Parameter()]
+        [Alias('Format')]
+        [ValidateSet('Auto', 'CSV', 'TSV')]
+        [String]$InputFormat = 'Auto',
+
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [String[]]$Filter = @('*.csv', '*.tsv', '*.tab'),
+
+        [Parameter()]
+        [Switch]$Recurse,
+
+        [Parameter()]
+        [String[]]$Exclude = @('.git', 'node_modules'),
+
+        [Parameter()]
+        [Switch]$NoHeader,
+
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [String[]]$Header,
+
+        [Parameter()]
+        [Switch]$Literal,
+
+        [Parameter()]
+        [Switch]$Exact,
+
+        [Parameter()]
+        [Switch]$CaseSensitive,
+
+        [Parameter()]
+        [Switch]$Any,
+
+        [Parameter()]
+        [Switch]$MatchColumnsOnly,
+
+        [Parameter()]
+        [Switch]$IncludeFileName,
+
+        [Parameter()]
+        [Switch]$IncludeFilePath,
+
+        [Parameter()]
+        [Switch]$IncludeRowNumber,
+
+        [Parameter()]
+        [ValidateSet('ASCII', 'BigEndianUnicode', 'Default', 'OEM', 'Unicode', 'UTF7', 'UTF8', 'UTF32')]
+        [String]$Encoding = 'UTF8',
+
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [String]$OutputPath,
+
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [String]$OutputFileNameSuffix,
+
+        [Parameter()]
+        [Switch]$OutputBySourceFile,
+
+        [Parameter()]
+        [Switch]$NoEmptyOutputFiles,
+
+        [Parameter()]
+        [ValidateSet('AsNeeded', 'Always', 'Never')]
+        [String]$UseQuotes = 'AsNeeded'
+    )
+
+    begin
+    {
+        function Get-TextEncoding
+        {
+            param(
+                [Parameter(Mandatory)]
+                [String]$Name
+            )
+
+            switch ($Name)
+            {
+                'ASCII' { return [System.Text.Encoding]::ASCII }
+                'BigEndianUnicode' { return [System.Text.Encoding]::BigEndianUnicode }
+                'Default' { return [System.Text.Encoding]::Default }
+                'OEM' { return [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage) }
+                'Unicode' { return [System.Text.Encoding]::Unicode }
+                'UTF7' { return [System.Text.Encoding]::UTF7 }
+                'UTF8' { return New-Object System.Text.UTF8Encoding($false) }
+                'UTF32' { return [System.Text.Encoding]::UTF32 }
+            }
+        }
+
+        function Get-FirstRecordFields
+        {
+            param(
+                [Parameter(Mandatory)]
+                [String]$FilePath,
+
+                [Parameter(Mandatory)]
+                [Char]$FieldDelimiter,
+
+                [Parameter(Mandatory)]
+                [System.Text.Encoding]$TextEncoding
+            )
+
+            $parser = $null
+            try
+            {
+                $parser = New-Object Microsoft.VisualBasic.FileIO.TextFieldParser($FilePath, $TextEncoding, $true)
+                $parser.TextFieldType = [Microsoft.VisualBasic.FileIO.FieldType]::Delimited
+                $parser.SetDelimiters(@([String]$FieldDelimiter))
+                $parser.HasFieldsEnclosedInQuotes = $true
+                $parser.TrimWhiteSpace = $false
+
+                if ($parser.EndOfData)
+                {
+                    return @()
+                }
+
+                return @($parser.ReadFields())
+            }
+            finally
+            {
+                if ($null -ne $parser)
+                {
+                    $parser.Dispose()
+                }
+            }
+        }
+
+        function Test-IsIntegerKey
+        {
+            param(
+                [Parameter(Mandatory)]
+                [Object]$Key
+            )
+
+            return $Key -is [Byte] -or
+            $Key -is [SByte] -or
+            $Key -is [Int16] -or
+            $Key -is [UInt16] -or
+            $Key -is [Int32] -or
+            $Key -is [UInt32] -or
+            $Key -is [Int64] -or
+            $Key -is [UInt64]
+        }
+
+        function Resolve-DuplicateColumnNames
+        {
+            param(
+                [Parameter(Mandatory)]
+                [String[]]$ColumnNames
+            )
+
+            $nameCounts = New-Object 'System.Collections.Generic.Dictionary[String,Int32]' ([StringComparer]::OrdinalIgnoreCase)
+            foreach ($columnName in $ColumnNames)
+            {
+                if ($nameCounts.ContainsKey($columnName))
+                {
+                    $nameCounts[$columnName]++
+                }
+                else
+                {
+                    $nameCounts[$columnName] = 1
+                }
+            }
+
+            $reservedNames = New-Object 'System.Collections.Generic.HashSet[String]' ([StringComparer]::OrdinalIgnoreCase)
+            foreach ($columnName in $ColumnNames)
+            {
+                if ($nameCounts[$columnName] -eq 1)
+                {
+                    [void]$reservedNames.Add($columnName)
+                }
+            }
+
+            $usedNames = New-Object 'System.Collections.Generic.HashSet[String]' ([StringComparer]::OrdinalIgnoreCase)
+            $duplicateIndexes = New-Object 'System.Collections.Generic.Dictionary[String,Int32]' ([StringComparer]::OrdinalIgnoreCase)
+            $resolvedColumnNames = New-Object System.Collections.ArrayList
+
+            foreach ($columnName in $ColumnNames)
+            {
+                if ($nameCounts[$columnName] -eq 1)
+                {
+                    $candidateName = $columnName
+                    $suffix = 1
+                    while ($usedNames.Contains($candidateName))
+                    {
+                        $candidateName = "$columnName$suffix"
+                        $suffix++
+                    }
+
+                    [void]$usedNames.Add($candidateName)
+                    [void]$resolvedColumnNames.Add($candidateName)
+                    continue
+                }
+
+                if (-not $duplicateIndexes.ContainsKey($columnName))
+                {
+                    $duplicateIndexes[$columnName] = 0
+                }
+
+                do
+                {
+                    $duplicateIndexes[$columnName]++
+                    $candidateName = "$columnName$($duplicateIndexes[$columnName])"
+                }
+                while ($reservedNames.Contains($candidateName) -or $usedNames.Contains($candidateName))
+
+                [void]$usedNames.Add($candidateName)
+                [void]$resolvedColumnNames.Add($candidateName)
+            }
+
+            return [String[]]$resolvedColumnNames.ToArray([String])
+        }
+
+        function Resolve-UniqueColumnName
+        {
+            param(
+                [Parameter(Mandatory)]
+                [String]$ColumnName,
+
+                [Parameter(Mandatory)]
+                [String[]]$ExistingColumnNames
+            )
+
+            $usedNames = New-Object 'System.Collections.Generic.HashSet[String]' ([StringComparer]::OrdinalIgnoreCase)
+            foreach ($existingColumnName in $ExistingColumnNames)
+            {
+                [void]$usedNames.Add($existingColumnName)
+            }
+
+            if (-not $usedNames.Contains($ColumnName))
+            {
+                return $ColumnName
+            }
+
+            $suffix = 1
+            do
+            {
+                $candidateName = "$ColumnName$suffix"
+                $suffix++
+            }
+            while ($usedNames.Contains($candidateName))
+
+            return $candidateName
+        }
+
+        function Resolve-OutputHeaderNames
+        {
+            param(
+                [Parameter(Mandatory)]
+                [String[]]$PropertyNames,
+
+                [Parameter(Mandatory)]
+                [String[]]$ColumnNames,
+
+                [Parameter(Mandatory)]
+                [String[]]$SourceColumnNames
+            )
+
+            $headerNames = New-Object System.Collections.ArrayList
+            foreach ($propertyName in $PropertyNames)
+            {
+                $matchedColumnIndex = -1
+                for ($columnIndex = 0; $columnIndex -lt $ColumnNames.Count; $columnIndex++)
+                {
+                    if ([String]::Equals($ColumnNames[$columnIndex], $propertyName, [StringComparison]::Ordinal))
+                    {
+                        $matchedColumnIndex = $columnIndex
+                        break
+                    }
+                }
+
+                if ($matchedColumnIndex -ge 0)
+                {
+                    [void]$headerNames.Add($SourceColumnNames[$matchedColumnIndex])
+                }
+                else
+                {
+                    [void]$headerNames.Add($propertyName)
+                }
+            }
+
+            return [String[]]$headerNames.ToArray([String])
+        }
+
+        function Resolve-SearchCriteria
+        {
+            param(
+                [Parameter(Mandatory)]
+                [String[]]$ColumnNames
+            )
+
+            $resolved = New-Object System.Collections.ArrayList
+
+            foreach ($entry in $criteriaEntries)
+            {
+                $columnName = $null
+
+                if (Test-IsIntegerKey -Key $entry.Key)
+                {
+                    if ($entry.Key -is [UInt64] -and $entry.Key -gt [UInt64][Int64]::MaxValue)
+                    {
+                        throw "Column index $($entry.Key) is outside the valid range 0 through $($ColumnNames.Count - 1)."
+                    }
+                    $columnIndex = [Int64]$entry.Key
+                    if ($columnIndex -lt 0 -or $columnIndex -ge $ColumnNames.Count)
+                    {
+                        throw "Column index $columnIndex is outside the valid range 0 through $($ColumnNames.Count - 1)."
+                    }
+                    $columnName = $ColumnNames[$columnIndex]
+                }
+                else
+                {
+                    $requestedName = [String]$entry.Key
+                    foreach ($candidateName in $ColumnNames)
+                    {
+                        if ([String]::Equals($candidateName, $requestedName, [StringComparison]::OrdinalIgnoreCase))
+                        {
+                            $columnName = $candidateName
+                            break
+                        }
+                    }
+
+                    if ($null -eq $columnName)
+                    {
+                        throw "Column '$requestedName' was not found. Available columns: $($ColumnNames -join ', ')."
+                    }
+                }
+
+                [void]$resolved.Add([PSCustomObject]@{
+                        ColumnName = $columnName
+                        Patterns = $entry.Patterns
+                    })
+            }
+
+            return @($resolved.ToArray())
+        }
+
+        function Test-FieldValue
+        {
+            param(
+                [AllowNull()]
+                [Object]$Value,
+
+                [Parameter(Mandatory)]
+                [Object[]]$Patterns
+            )
+
+            $text = if ($null -eq $Value) { [String]::Empty } else { [String]$Value }
+
+            if ($Literal)
+            {
+                $comparison = if ($CaseSensitive) { [StringComparison]::Ordinal } else { [StringComparison]::OrdinalIgnoreCase }
+                foreach ($pattern in $Patterns)
+                {
+                    if ($Exact -and [String]::Equals($text, $pattern, $comparison))
+                    {
+                        return $true
+                    }
+                    if (-not $Exact -and $text.IndexOf($pattern, $comparison) -ge 0)
+                    {
+                        return $true
+                    }
+                }
+            }
+            else
+            {
+                foreach ($pattern in $Patterns)
+                {
+                    if ($pattern.IsMatch($text))
+                    {
+                        return $true
+                    }
+                }
+            }
+
+            return $false
+        }
+
+        function ConvertTo-DelimitedField
+        {
+            param(
+                [AllowNull()]
+                [Object]$Value,
+
+                [Parameter(Mandatory)]
+                [Char]$FieldDelimiter,
+
+                [Parameter(Mandatory)]
+                [ValidateSet('AsNeeded', 'Always', 'Never')]
+                [String]$QuoteMode
+            )
+
+            $text = if ($null -eq $Value) { [String]::Empty } else { [String]$Value }
+            if ($QuoteMode -eq 'Never')
+            {
+                return $text
+            }
+
+            $requiresQuotes = $QuoteMode -eq 'Always' -or
+            $text.IndexOf($FieldDelimiter) -ge 0 -or
+            $text.IndexOf('"') -ge 0 -or
+            $text.IndexOf("`r") -ge 0 -or
+            $text.IndexOf("`n") -ge 0
+
+            if (-not $requiresQuotes)
+            {
+                return $text
+            }
+
+            return '"' + $text.Replace('"', '""') + '"'
+        }
+
+        function ConvertTo-DelimitedRecord
+        {
+            param(
+                [Parameter(Mandatory)]
+                [AllowEmptyCollection()]
+                [Object[]]$Fields,
+
+                [Parameter(Mandatory)]
+                [Char]$FieldDelimiter,
+
+                [Parameter(Mandatory)]
+                [ValidateSet('AsNeeded', 'Always', 'Never')]
+                [String]$QuoteMode
+            )
+
+            $escapedFields = foreach ($field in $Fields)
+            {
+                ConvertTo-DelimitedField -Value $field -FieldDelimiter $FieldDelimiter -QuoteMode $QuoteMode
+            }
+
+            return $escapedFields -join ([String]$FieldDelimiter)
+        }
+
+        function Write-DelimitedOutputPath
+        {
+            param(
+                [Parameter(Mandatory)]
+                [String]$FilePath,
+
+                [Parameter(Mandatory)]
+                [AllowEmptyCollection()]
+                [System.Collections.Generic.List[Object]]$Records,
+
+                [Parameter()]
+                [String[]]$HeaderNames,
+
+                [Parameter()]
+                [String[]]$PropertyNames,
+
+                [Parameter(Mandatory)]
+                [Char]$FieldDelimiter,
+
+                [Parameter(Mandatory)]
+                [ValidateSet('AsNeeded', 'Always', 'Never')]
+                [String]$QuoteMode,
+
+                [Parameter(Mandatory)]
+                [System.Text.Encoding]$TextEncoding
+            )
+
+            if (Test-Path -LiteralPath $FilePath -PathType Container)
+            {
+                throw "Output path points to a directory: $FilePath"
+            }
+
+            if ($Records.Count -eq 0)
+            {
+                [System.IO.File]::WriteAllText($FilePath, [String]::Empty, $TextEncoding)
+                return
+            }
+
+            if ($null -eq $PropertyNames -or $PropertyNames.Count -eq 0)
+            {
+                $PropertyNames = [String[]]@($Records[0].PSObject.Properties | ForEach-Object { $_.Name })
+            }
+            if ($null -eq $HeaderNames -or $HeaderNames.Count -ne $PropertyNames.Count)
+            {
+                $HeaderNames = $PropertyNames
+            }
+
+            $lines = New-Object 'System.Collections.Generic.List[String]'
+            $lines.Add((ConvertTo-DelimitedRecord -Fields $HeaderNames -FieldDelimiter $FieldDelimiter -QuoteMode $QuoteMode))
+
+            for ($recordIndex = 0; $recordIndex -lt $Records.Count; $recordIndex++)
+            {
+                $record = $Records[$recordIndex]
+                $fields = New-Object 'System.Collections.Generic.List[Object]'
+                foreach ($propertyName in $PropertyNames)
+                {
+                    $property = $record.PSObject.Properties[$propertyName]
+                    $fieldValue = if ($null -eq $property -or $null -eq $property.Value)
+                    {
+                        [String]::Empty
+                    }
+                    else
+                    {
+                        $property.Value
+                    }
+                    [void]$fields.Add($fieldValue)
+                }
+
+                $lines.Add((ConvertTo-DelimitedRecord -Fields $fields.ToArray() -FieldDelimiter $FieldDelimiter -QuoteMode $QuoteMode))
+            }
+
+            [System.IO.File]::WriteAllText($FilePath, (($lines.ToArray() -join [Environment]::NewLine) + [Environment]::NewLine), $TextEncoding)
+        }
+
+        function Add-OutputFileNameSuffix
+        {
+            param(
+                [Parameter(Mandatory)]
+                [String]$FilePath,
+
+                [Parameter(Mandatory)]
+                [String]$Suffix
+            )
+
+            $directoryPath = Split-Path -Path $FilePath -Parent
+            $fileName = Split-Path -Path $FilePath -Leaf
+            $extension = [System.IO.Path]::GetExtension($fileName)
+            $nameWithoutExtension = if ([String]::IsNullOrEmpty($extension))
+            {
+                $fileName
+            }
+            else
+            {
+                $fileName.Substring(0, $fileName.Length - $extension.Length)
+            }
+
+            $suffixedFileName = "${nameWithoutExtension}${Suffix}${extension}"
+            if ([String]::IsNullOrEmpty($directoryPath))
+            {
+                return $suffixedFileName
+            }
+
+            return Join-Path -Path $directoryPath -ChildPath $suffixedFileName
+        }
+
+        function Test-OutputFileNameSuffix
+        {
+            param(
+                [Parameter(Mandatory)]
+                [String]$Suffix
+            )
+
+            if ([String]::IsNullOrWhiteSpace($Suffix))
+            {
+                throw 'OutputFileNameSuffix cannot be empty or whitespace.'
+            }
+
+            $invalidCharacters = @([Char]'/', [Char]'\') + [System.IO.Path]::GetInvalidFileNameChars()
+            foreach ($invalidCharacter in $invalidCharacters)
+            {
+                if ($Suffix.IndexOf($invalidCharacter) -ge 0)
+                {
+                    throw "OutputFileNameSuffix cannot contain path separator or invalid file-name characters: $Suffix"
+                }
+            }
+        }
+
+        function Test-IsExcludedFile
+        {
+            param(
+                [Parameter(Mandatory)]
+                [System.IO.FileInfo]$File,
+
+                [Parameter(Mandatory)]
+                [String]$RootPath
+            )
+
+            if (-not $Recurse -or -not $Exclude)
+            {
+                return $false
+            }
+
+            $trimmedRoot = $RootPath.TrimEnd(
+                [System.IO.Path]::DirectorySeparatorChar,
+                [System.IO.Path]::AltDirectorySeparatorChar
+            )
+            $relativeDirectory = $File.DirectoryName.Substring($trimmedRoot.Length)
+            $directorySegments = @($relativeDirectory -split '[\\/]' | Where-Object { $_ })
+
+            foreach ($directorySegment in $directorySegments)
+            {
+                foreach ($excludePattern in $Exclude)
+                {
+                    if ($directorySegment -like $excludePattern)
+                    {
+                        return $true
+                    }
+                }
+            }
+
+            return $false
+        }
+
+        if ($Criteria.Count -eq 0)
+        {
+            throw 'Criteria must contain at least one column and pattern.'
+        }
+        if ($NoHeader -and $PSBoundParameters.ContainsKey('Header'))
+        {
+            throw 'NoHeader and Header cannot be used together.'
+        }
+        if ($Exact -and -not $Literal)
+        {
+            throw 'Exact requires Literal.'
+        }
+        if ($InputFormat -ne 'Auto' -and $PSBoundParameters.ContainsKey('Delimiter'))
+        {
+            throw "Delimiter cannot be combined with InputFormat '$InputFormat'. Use InputFormat Auto to specify a custom delimiter."
+        }
+
+        $writeOutputPath = $PSBoundParameters.ContainsKey('OutputPath')
+        $outputFileNameSuffixWasSpecified = $PSBoundParameters.ContainsKey('OutputFileNameSuffix')
+        $useQuotesWasSpecified = $PSBoundParameters.ContainsKey('UseQuotes')
+        $resolvedOutputPath = $null
+        $resolvedOutputDirectory = $null
+        $outputFormat = $null
+        $outputPropertyNames = New-Object 'System.Collections.Generic.List[String]'
+        $outputPropertyNameSet = New-Object 'System.Collections.Generic.HashSet[String]' ([StringComparer]::OrdinalIgnoreCase)
+        $outputHeaderNames = New-Object 'System.Collections.Generic.List[String]'
+        $outputRecords = New-Object 'System.Collections.Generic.List[Object]'
+        $sourceOutputGroups = New-Object 'System.Collections.Generic.Dictionary[String,Object]' ([StringComparer]::OrdinalIgnoreCase)
+
+        if ($useQuotesWasSpecified -and -not $writeOutputPath)
+        {
+            throw 'UseQuotes requires OutputPath.'
+        }
+        if ($outputFileNameSuffixWasSpecified -and -not $writeOutputPath)
+        {
+            throw 'OutputFileNameSuffix requires OutputPath.'
+        }
+        if ($OutputBySourceFile -and -not $writeOutputPath)
+        {
+            throw 'OutputBySourceFile requires OutputPath.'
+        }
+        if ($NoEmptyOutputFiles -and -not $writeOutputPath)
+        {
+            throw 'NoEmptyOutputFiles requires OutputPath.'
+        }
+
+        if ($writeOutputPath)
+        {
+            if ([String]::IsNullOrWhiteSpace($OutputPath))
+            {
+                throw 'OutputPath cannot be empty or whitespace.'
+            }
+            if ($outputFileNameSuffixWasSpecified)
+            {
+                Test-OutputFileNameSuffix -Suffix $OutputFileNameSuffix
+            }
+
+            try
+            {
+                $resolvedOutputPath = $PSCmdlet.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath.Trim())
+            }
+            catch
+            {
+                throw "Invalid OutputPath '$OutputPath': $($_.Exception.Message)"
+            }
+
+            if ($OutputBySourceFile)
+            {
+                if (Test-Path -LiteralPath $resolvedOutputPath -PathType Leaf)
+                {
+                    throw "OutputPath must identify a directory when OutputBySourceFile is used: $resolvedOutputPath"
+                }
+                if (-not (Test-Path -LiteralPath $resolvedOutputPath -PathType Container))
+                {
+                    try
+                    {
+                        [void](New-Item -ItemType Directory -Path $resolvedOutputPath -Force -ErrorAction Stop)
+                    }
+                    catch
+                    {
+                        throw "Unable to create OutputPath directory '$resolvedOutputPath': $($_.Exception.Message)"
+                    }
+                }
+
+                $resolvedOutputDirectory = $resolvedOutputPath
+            }
+            else
+            {
+                if ($outputFileNameSuffixWasSpecified)
+                {
+                    $resolvedOutputPath = Add-OutputFileNameSuffix -FilePath $resolvedOutputPath -Suffix $OutputFileNameSuffix
+                }
+
+                $outputExtension = [System.IO.Path]::GetExtension($resolvedOutputPath).ToLowerInvariant()
+                $outputFormat = switch ($outputExtension)
+                {
+                    '.csv' { 'Csv' }
+                    '.tsv' { 'Tsv' }
+                    '.json' { 'Json' }
+                    default { $null }
+                }
+
+                if ($null -eq $outputFormat)
+                {
+                    throw "OutputPath must use a .csv, .tsv, or .json extension: $OutputPath"
+                }
+                if ($useQuotesWasSpecified -and $outputFormat -eq 'Json')
+                {
+                    throw 'UseQuotes applies only to CSV and TSV output files.'
+                }
+                if (Test-Path -LiteralPath $resolvedOutputPath -PathType Container)
+                {
+                    throw "OutputPath must identify a file unless OutputBySourceFile is used: $resolvedOutputPath"
+                }
+
+                $outputDirectory = Split-Path -Path $resolvedOutputPath -Parent
+                if (-not [String]::IsNullOrWhiteSpace($outputDirectory) -and
+                    -not (Test-Path -LiteralPath $outputDirectory -PathType Container))
+                {
+                    throw "OutputPath directory does not exist: $outputDirectory"
+                }
+            }
+        }
+
+        $criteriaEntries = New-Object System.Collections.ArrayList
+        $regexOptions = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+        if (-not $CaseSensitive)
+        {
+            $regexOptions = $regexOptions -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        }
+
+        foreach ($entry in $Criteria.GetEnumerator())
+        {
+            $patterns = @($entry.Value)
+            if ($null -eq $entry.Value -or $patterns.Count -eq 0)
+            {
+                throw "Criterion '$($entry.Key)' must contain at least one pattern."
+            }
+
+            $stringPatterns = New-Object System.Collections.ArrayList
+            foreach ($pattern in $patterns)
+            {
+                if ($null -eq $pattern)
+                {
+                    throw "Criterion '$($entry.Key)' cannot contain a null pattern."
+                }
+                [void]$stringPatterns.Add([String]$pattern)
+            }
+
+            $preparedPatterns = if ($Literal)
+            {
+                [String[]]$stringPatterns.ToArray()
+            }
+            else
+            {
+                $compiledPatterns = New-Object System.Collections.ArrayList
+                foreach ($pattern in $stringPatterns)
+                {
+                    try
+                    {
+                        [void]$compiledPatterns.Add((New-Object System.Text.RegularExpressions.Regex($pattern, $regexOptions)))
+                    }
+                    catch [System.ArgumentException]
+                    {
+                        throw "Invalid regular expression for criterion '$($entry.Key)': $($_.Exception.Message)"
+                    }
+                }
+
+                $compiledPatterns.ToArray()
+            }
+
+            [void]$criteriaEntries.Add([PSCustomObject]@{
+                    Key = $entry.Key
+                    Patterns = $preparedPatterns
+                })
+        }
+
+        if ($PSBoundParameters.ContainsKey('Header'))
+        {
+            $headerNames = New-Object 'System.Collections.Generic.HashSet[String]' ([StringComparer]::OrdinalIgnoreCase)
+            foreach ($headerName in $Header)
+            {
+                if ([String]::IsNullOrWhiteSpace($headerName))
+                {
+                    throw 'Header names cannot be empty or whitespace.'
+                }
+                if (-not $headerNames.Add($headerName))
+                {
+                    throw "Header contains the duplicate column name '$headerName'."
+                }
+            }
+        }
+
+        if (-not ('Microsoft.VisualBasic.FileIO.TextFieldParser' -as [Type]))
+        {
+            try
+            {
+                Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop
+            }
+            catch
+            {
+                try
+                {
+                    Add-Type -AssemblyName Microsoft.VisualBasic.Core -ErrorAction Stop
+                }
+                catch
+                {
+                    throw 'Delimited-file header preflight requires the Microsoft.VisualBasic TextFieldParser type, which could not be loaded.'
+                }
+            }
+        }
+
+        $processedFiles = New-Object 'System.Collections.Generic.HashSet[String]' ([StringComparer]::OrdinalIgnoreCase)
+        $textEncoding = Get-TextEncoding -Name $Encoding
+    }
+
+    process
+    {
+        foreach ($pathItem in $Path)
+        {
+            $pathUsesWildcard = [System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($pathItem)
+            try
+            {
+                $resolvedPaths = @($PSCmdlet.SessionState.Path.GetResolvedPSPathFromPSPath($pathItem))
+            }
+            catch
+            {
+                Write-Error -ErrorRecord $_
+                continue
+            }
+
+            foreach ($resolvedPath in $resolvedPaths)
+            {
+                if ($resolvedPath.Provider.Name -ne 'FileSystem')
+                {
+                    Write-Error "Path '$($resolvedPath.Path)' is not a FileSystem provider path."
+                    continue
+                }
+
+                $inputPath = $resolvedPath.ProviderPath
+                $directoryRoot = $null
+                $inputFiles = @()
+
+                if (Test-Path -LiteralPath $inputPath -PathType Leaf)
+                {
+                    $inputFiles = @(Get-Item -LiteralPath $inputPath -ErrorAction Stop)
+                }
+                elseif (Test-Path -LiteralPath $inputPath -PathType Container)
+                {
+                    $directoryRoot = $inputPath
+                    foreach ($filterPattern in $Filter)
+                    {
+                        $childItemParameters = @{
+                            LiteralPath = $inputPath
+                            Filter = $filterPattern
+                            File = $true
+                            ErrorAction = 'SilentlyContinue'
+                        }
+                        if ($Recurse)
+                        {
+                            $childItemParameters.Recurse = $true
+                        }
+
+                        $inputFiles += @(Get-ChildItem @childItemParameters)
+                    }
+                }
+                else
+                {
+                    Write-Error "Path '$inputPath' is not a file or directory."
+                    continue
+                }
+
+                foreach ($inputFile in $inputFiles)
+                {
+                    $filePath = $inputFile.FullName
+                    $sourceOutputPath = $null
+                    if ($writeOutputPath)
+                    {
+                        if ($OutputBySourceFile)
+                        {
+                            $sourceOutputFileName = [System.IO.Path]::GetFileName($filePath)
+                            if ($outputFileNameSuffixWasSpecified)
+                            {
+                                $sourceOutputFileName = Add-OutputFileNameSuffix -FilePath $sourceOutputFileName -Suffix $OutputFileNameSuffix
+                            }
+
+                            $sourceOutputPath = Join-Path -Path $resolvedOutputDirectory -ChildPath $sourceOutputFileName
+
+                            if ([String]::Equals(
+                                    [System.IO.Path]::GetFullPath($filePath),
+                                    [System.IO.Path]::GetFullPath($sourceOutputPath),
+                                    [StringComparison]::OrdinalIgnoreCase
+                                ))
+                            {
+                                if ($directoryRoot -or $pathUsesWildcard)
+                                {
+                                    Write-Verbose "Skipping existing per-source output file during input discovery: $filePath"
+                                    continue
+                                }
+
+                                throw "OutputBySourceFile would overwrite the explicit input file: $filePath"
+                            }
+
+                            if ($sourceOutputGroups.ContainsKey($sourceOutputPath))
+                            {
+                                Write-Error (
+                                    "Multiple input files resolve to the same per-source output file '$sourceOutputPath'. " +
+                                    "Conflicting source files: '$($sourceOutputGroups[$sourceOutputPath].SourceFile)' and '$filePath'."
+                                )
+                                continue
+                            }
+                        }
+                        elseif ([String]::Equals(
+                                [System.IO.Path]::GetFullPath($filePath),
+                                [System.IO.Path]::GetFullPath($resolvedOutputPath),
+                                [StringComparison]::OrdinalIgnoreCase
+                            ))
+                        {
+                            if ($directoryRoot -or $pathUsesWildcard)
+                            {
+                                Write-Verbose "Skipping existing output file during input discovery: $filePath"
+                                continue
+                            }
+
+                            throw "OutputPath cannot also be an explicit input file: $filePath"
+                        }
+                    }
+                    if ($directoryRoot -and (Test-IsExcludedFile -File $inputFile -RootPath $directoryRoot))
+                    {
+                        Write-Verbose "Skipping file in excluded directory: $filePath"
+                        continue
+                    }
+                    if (-not $processedFiles.Add($filePath))
+                    {
+                        Write-Verbose "Skipping duplicate input file: $filePath"
+                        continue
+                    }
+
+                    $delimiterWasExplicit = $PSBoundParameters.ContainsKey('Delimiter')
+                    $fileDelimiter = switch ($InputFormat)
+                    {
+                        'CSV' { [Char]','; break }
+                        'TSV' { [Char]9; break }
+                        default
+                        {
+                            if ($delimiterWasExplicit)
+                            {
+                                $Delimiter
+                            }
+                            elseif ([System.IO.Path]::GetExtension($filePath) -iin @('.tsv', '.tab'))
+                            {
+                                [Char]9
+                            }
+                            else
+                            {
+                                [Char]','
+                            }
+                        }
+                    }
+
+                    Write-Verbose "Searching '$filePath' with delimiter '$fileDelimiter'."
+
+                    $importParameters = @{
+                        LiteralPath = $filePath
+                        Delimiter = $fileDelimiter
+                        Encoding = $Encoding
+                        ErrorAction = 'Stop'
+                    }
+
+                    try
+                    {
+                        $firstFields = @(Get-FirstRecordFields -FilePath $filePath -FieldDelimiter $fileDelimiter -TextEncoding $textEncoding)
+                    }
+                    catch
+                    {
+                        Write-Error "Unable to read the first record from '$filePath': $($_.Exception.Message)"
+                        continue
+                    }
+
+                    if ($InputFormat -eq 'Auto' -and
+                        -not $delimiterWasExplicit -and
+                        $fileDelimiter -ne [Char]9 -and
+                        $firstFields.Count -eq 1 -and
+                        [String]$firstFields[0] -like "*`t*")
+                    {
+                        $fileDelimiter = [Char]9
+                        $importParameters.Delimiter = $fileDelimiter
+                        Write-Verbose "Detected tab-delimited header in '$filePath'; retrying with tab delimiter."
+
+                        try
+                        {
+                            $firstFields = @(Get-FirstRecordFields -FilePath $filePath -FieldDelimiter $fileDelimiter -TextEncoding $textEncoding)
+                        }
+                        catch
+                        {
+                            Write-Error "Unable to read the first record from '$filePath' using the detected tab delimiter: $($_.Exception.Message)"
+                            continue
+                        }
+                    }
+
+                    if ($firstFields.Count -eq 0)
+                    {
+                        Write-Verbose "Skipping empty file: $filePath"
+                        continue
+                    }
+
+                    $columnNames = $null
+                    $sourceColumnNames = $null
+                    $skipFirstImportedRow = $false
+                    if ($PSBoundParameters.ContainsKey('Header'))
+                    {
+                        if ($Header.Count -ne $firstFields.Count)
+                        {
+                            Write-Error "Header contains $($Header.Count) names, but the first record in '$filePath' contains $($firstFields.Count) fields."
+                            continue
+                        }
+                        $importParameters.Header = $Header
+                        $columnNames = [String[]]$Header
+                        $sourceColumnNames = [String[]]$Header
+                    }
+                    elseif ($NoHeader)
+                    {
+                        $generatedHeader = for ($columnIndex = 0; $columnIndex -lt $firstFields.Count; $columnIndex++)
+                        {
+                            "Column$columnIndex"
+                        }
+                        $importParameters.Header = [String[]]$generatedHeader
+                        $columnNames = [String[]]$generatedHeader
+                        $sourceColumnNames = [String[]]$generatedHeader
+                    }
+                    else
+                    {
+                        $blankHeaderIndexes = for ($headerIndex = 0; $headerIndex -lt $firstFields.Count; $headerIndex++)
+                        {
+                            if ([String]::IsNullOrWhiteSpace($firstFields[$headerIndex]))
+                            {
+                                $headerIndex
+                            }
+                        }
+
+                        if ($blankHeaderIndexes.Count -gt 0)
+                        {
+                            Write-Error (
+                                "File '$filePath' contains empty column headers at zero-based indexes: $($blankHeaderIndexes -join ', '). " +
+                                'Search-DelimitedFile requires non-empty headers when header parsing is enabled. ' +
+                                'Re-run the search with -NoHeader and integer Criteria keys to search by zero-based column index.'
+                            )
+                            continue
+                        }
+
+                        $columnNames = Resolve-DuplicateColumnNames -ColumnNames $firstFields
+                        $sourceColumnNames = [String[]]$firstFields
+                        for ($headerIndex = 0; $headerIndex -lt $firstFields.Count; $headerIndex++)
+                        {
+                            if (-not [String]::Equals($firstFields[$headerIndex], $columnNames[$headerIndex], [StringComparison]::Ordinal))
+                            {
+                                $importParameters.Header = $columnNames
+                                $skipFirstImportedRow = $true
+                                break
+                            }
+                        }
+                    }
+
+                    try
+                    {
+                        $resolvedCriteria = @(Resolve-SearchCriteria -ColumnNames $columnNames)
+                        $criteriaColumnNames = @($resolvedCriteria | ForEach-Object { $_.ColumnName })
+                        $selectedColumns = if ($MatchColumnsOnly)
+                        {
+                            @($columnNames | Where-Object { $criteriaColumnNames -icontains $_ })
+                        }
+                        else
+                        {
+                            $columnNames
+                        }
+
+                        if ($IncludeFileName -and $columnNames -icontains 'FileName')
+                        {
+                            throw "Input file '$filePath' already contains a FileName column. Omit IncludeFileName or rename the input column."
+                        }
+                        if ($IncludeFilePath -and $columnNames -icontains 'FilePath')
+                        {
+                            throw "Input file '$filePath' already contains a FilePath column. Omit IncludeFilePath or rename the input column."
+                        }
+                        $rowNumberColumnName = if ($IncludeRowNumber)
+                        {
+                            Resolve-UniqueColumnName -ColumnName 'RowNumber' -ExistingColumnNames $columnNames
+                        }
+
+                        $delimitedOutputPropertyNames = New-Object System.Collections.ArrayList
+                        if ($IncludeFileName)
+                        {
+                            [void]$delimitedOutputPropertyNames.Add('FileName')
+                        }
+                        if ($IncludeFilePath)
+                        {
+                            [void]$delimitedOutputPropertyNames.Add('FilePath')
+                        }
+                        if ($IncludeRowNumber)
+                        {
+                            [void]$delimitedOutputPropertyNames.Add($rowNumberColumnName)
+                        }
+                        foreach ($selectedColumn in $selectedColumns)
+                        {
+                            [void]$delimitedOutputPropertyNames.Add($selectedColumn)
+                        }
+                        $delimitedOutputHeaderNames = Resolve-OutputHeaderNames -PropertyNames ([String[]]$delimitedOutputPropertyNames.ToArray([String])) -ColumnNames $columnNames -SourceColumnNames $sourceColumnNames
+
+                        $sourceOutputGroup = if ($OutputBySourceFile)
+                        {
+                            [PSCustomObject]@{
+                                SourceFile = $filePath
+                                OutputPath = $sourceOutputPath
+                                Delimiter = $fileDelimiter
+                                HeaderNames = $delimitedOutputHeaderNames
+                                Records = New-Object 'System.Collections.Generic.List[Object]'
+                            }
+                        }
+                        if ($null -ne $sourceOutputGroup)
+                        {
+                            $sourceOutputGroups[$sourceOutputPath] = $sourceOutputGroup
+                        }
+                    }
+                    catch
+                    {
+                        Write-Error -ErrorRecord $_
+                        continue
+                    }
+
+                    try
+                    {
+                        $importedRowIndex = 0
+                        $rowNumberOffset = if ($PSBoundParameters.ContainsKey('Header') -or $NoHeader -or $skipFirstImportedRow)
+                        {
+                            0
+                        }
+                        else
+                        {
+                            1
+                        }
+
+                        Import-Csv @importParameters | ForEach-Object {
+                            $row = $_
+                            $shouldSkipRow = $skipFirstImportedRow -and $importedRowIndex -eq 0
+                            $importedRowIndex++
+                            $rowNumber = $importedRowIndex + $rowNumberOffset
+
+                            if (-not $shouldSkipRow)
+                            {
+                                $criterionMatches = foreach ($criterion in $resolvedCriteria)
+                                {
+                                    Test-FieldValue -Value $row.($criterion.ColumnName) -Patterns $criterion.Patterns
+                                }
+
+                                $isMatch = if ($Any)
+                                {
+                                    $criterionMatches -contains $true
+                                }
+                                else
+                                {
+                                    $criterionMatches -notcontains $false
+                                }
+
+                                if ($isMatch)
+                                {
+                                    $outputRow = [Ordered]@{}
+                                    if ($IncludeFileName)
+                                    {
+                                        $outputRow.FileName = [System.IO.Path]::GetFileName($filePath)
+                                    }
+                                    if ($IncludeFilePath)
+                                    {
+                                        $outputRow.FilePath = $filePath
+                                    }
+                                    if ($IncludeRowNumber)
+                                    {
+                                        $outputRow[$rowNumberColumnName] = $rowNumber
+                                    }
+                                    foreach ($columnName in $selectedColumns)
+                                    {
+                                        $outputRow[$columnName] = $row.$columnName
+                                    }
+
+                                    $resultObject = [PSCustomObject]$outputRow
+                                    if ($writeOutputPath)
+                                    {
+                                        if ($OutputBySourceFile)
+                                        {
+                                            $sourceOutputGroup.Records.Add($resultObject)
+                                        }
+                                        else
+                                        {
+                                            for ($outputColumnIndex = 0; $outputColumnIndex -lt $delimitedOutputPropertyNames.Count; $outputColumnIndex++)
+                                            {
+                                                $outputPropertyName = $delimitedOutputPropertyNames[$outputColumnIndex]
+                                                if ($outputPropertyNameSet.Add($outputPropertyName))
+                                                {
+                                                    $outputPropertyNames.Add($outputPropertyName)
+                                                    $outputHeaderNames.Add($delimitedOutputHeaderNames[$outputColumnIndex])
+                                                }
+                                            }
+                                            $outputRecords.Add($resultObject)
+                                        }
+                                    }
+                                    else
+                                    {
+                                        $resultObject
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        Write-Error -ErrorRecord $_
+                    }
+                }
+            }
+        }
+    }
+
+    end
+    {
+        if (-not $writeOutputPath)
+        {
+            return
+        }
+
+        try
+        {
+            $utf8Encoding = New-Object System.Text.UTF8Encoding($false)
+
+            if ($OutputBySourceFile)
+            {
+                $sourceOutputRecordCount = 0
+                $sourceOutputFileCount = 0
+                foreach ($sourceOutputGroup in $sourceOutputGroups.Values)
+                {
+                    try
+                    {
+                        if ($NoEmptyOutputFiles -and $sourceOutputGroup.Records.Count -eq 0)
+                        {
+                            if (Test-Path -LiteralPath $sourceOutputGroup.OutputPath -PathType Leaf)
+                            {
+                                Remove-Item -LiteralPath $sourceOutputGroup.OutputPath -Force -ErrorAction Stop
+                            }
+
+                            continue
+                        }
+
+                        Write-DelimitedOutputPath -FilePath $sourceOutputGroup.OutputPath -Records $sourceOutputGroup.Records -HeaderNames $sourceOutputGroup.HeaderNames -FieldDelimiter $sourceOutputGroup.Delimiter -QuoteMode $UseQuotes -TextEncoding $utf8Encoding
+                        $sourceOutputRecordCount += $sourceOutputGroup.Records.Count
+                        $sourceOutputFileCount++
+                    }
+                    catch
+                    {
+                        Write-Error "Unable to write per-source search results to '$($sourceOutputGroup.OutputPath)': $($_.Exception.Message)"
+                    }
+                }
+
+                Write-Verbose "Wrote $sourceOutputRecordCount matching row(s) to $sourceOutputFileCount per-source output file(s) in '$resolvedOutputDirectory'."
+            }
+            else
+            {
+                if ($NoEmptyOutputFiles -and $outputRecords.Count -eq 0)
+                {
+                    if (Test-Path -LiteralPath $resolvedOutputPath -PathType Leaf)
+                    {
+                        Remove-Item -LiteralPath $resolvedOutputPath -Force -ErrorAction Stop
+                    }
+
+                    Write-Verbose "Skipped empty output for '$resolvedOutputPath' because no rows matched."
+                    return
+                }
+
+                switch ($outputFormat)
+                {
+                    'Json'
+                    {
+                        # Index the generic list explicitly. Windows PowerShell 5.1 can treat the
+                        # Object[] returned by ToArray() as one pipeline object in this expression,
+                        # causing ConvertTo-Json to serialize array metadata instead of each row.
+                        $jsonItems = for ($outputIndex = 0; $outputIndex -lt $outputRecords.Count; $outputIndex++)
+                        {
+                            $outputRecords[$outputIndex] | ConvertTo-Json -Depth 10
+                        }
+
+                        if ($jsonItems.Count -eq 0)
+                        {
+                            $jsonText = '[]'
+                        }
+                        else
+                        {
+                            $jsonText = "[`n$($jsonItems -join ",`n")`n]"
+                        }
+
+                        [System.IO.File]::WriteAllText($resolvedOutputPath, $jsonText, $utf8Encoding)
+                    }
+                    'Csv'
+                    {
+                        Write-DelimitedOutputPath -FilePath $resolvedOutputPath -Records $outputRecords -HeaderNames $outputHeaderNames -PropertyNames ([String[]]$outputPropertyNames.ToArray()) -FieldDelimiter ',' -QuoteMode $UseQuotes -TextEncoding $utf8Encoding
+                    }
+                    'Tsv'
+                    {
+                        Write-DelimitedOutputPath -FilePath $resolvedOutputPath -Records $outputRecords -HeaderNames $outputHeaderNames -PropertyNames ([String[]]$outputPropertyNames.ToArray()) -FieldDelimiter ([Char]9) -QuoteMode $UseQuotes -TextEncoding $utf8Encoding
+                    }
+                }
+
+                Write-Verbose "Wrote $($outputRecords.Count) matching row(s) to '$resolvedOutputPath'."
+            }
+        }
+        catch
+        {
+            throw "Unable to write search results to '$resolvedOutputPath': $($_.Exception.Message)"
+        }
+
+    }
+}

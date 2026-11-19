@@ -35,6 +35,9 @@ jobs:
           $r | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
           if ($r | Where-Object Severity -eq 'Error') { exit 1 }
 
+      - name: Function reference is up to date
+        run: ./tools/Update-FunctionDocs.ps1 -Check
+
       - name: Pester
         run: |
           $cfg = New-PesterConfiguration

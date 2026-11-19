@@ -1,6 +1,6 @@
 # pwsh-profile
 
-A fast, modular PowerShell profile for sysadmins. Every function lives in its own file and only loads the first time you use it, so the shell stays quick no matter how many you add.
+A fast, modular PowerShell profile for sysadmins. **New here? Read the [guide](docs/GUIDE.md).** Every function lives in its own file and only loads the first time you use it, so the shell stays quick no matter how many you add.
 
 Works on **PowerShell 7+** (Windows, macOS, Linux) and **Windows PowerShell 5.1**.
 
@@ -44,48 +44,31 @@ Want to see where startup time goes? Run `$env:PWSH_PROFILE_TIMING = '1'; reload
 
 ## What's in it
 
-Run `pf` to see this list in your terminal, or `pf dns` to search it.
+**96 functions** across networking & DNS, certificates & TLS, Active Directory, system health, files, modules and everyday utilities: 37 of ours plus 59 curated from [jonlabelle/pwsh-profile](https://github.com/jonlabelle/pwsh-profile).
 
-| Category | Function | Alias | What it does |
-|---|---|---|---|
-| Network | `Test-Port` | `tp` | Fast TCP check, many hosts/ports at once |
-| | `Get-MyIP` | `myip` | Local IPv4 + public IP |
-| | `Clear-DnsCache` | `flushdns` | Flush DNS on Windows, macOS or Linux |
-| | `Get-CertificateExpiration` | `certexp` | When a server's TLS cert expires |
-| | `Convert-MacAddress` | `mac` | Colon / dash / Cisco / plain formats |
-| Active Directory | `Get-LockedUsers` | `locked` | Every locked-out account |
-| | `Get-UserStatus` | `ustat` | Enabled, locked, real password expiry; `-Unlock` |
-| | `Find-ADUserQuick` | `seu` | Fuzzy user search (name, email, description...) |
-| | `Find-ADGroupQuick` | `seg` | Fuzzy group search |
-| | `Copy-ADGroupMembership` | `copygroups` | "Make them like Bob", with `-WhatIf` |
-| System | `Show-Uptime` | `uptime`* | Last boot + uptime, local or remote |
-| | `Get-RecentErrors` | `errs` | Recent Critical/Error events |
-| | `Get-Hash` | `hash` | File hash; `-Expected` prints MATCH/MISMATCH |
-| | `Get-DiskUsage` | `df`* | Space on every drive |
-| | `Get-FolderSize` | `du`* | Biggest subfolders first |
-| | `Find-File` | `ff` | Recursive filename search |
-| | `Get-CommandPath` | `which`* | Where a command comes from |
-| | `New-File` | `touch`* | Create a file or update its timestamp |
-| | `Enter-NewDirectory` | `mkcd` | Make a folder and cd into it |
-| | `Start-Elevated` | `admin` | Elevated tab/window, optionally running a command |
-| | `Unblock-Downloads` | `ubd` | Unblock files in Downloads |
-| | `Get-TopProcess` | `topp` | Top processes by memory or CPU |
-| Navigation | `Show-DirectoryHistory` | `dh` | Numbered list of folders visited this session |
-| | `Set-LocationFromHistory` | `j` | `j 3` or `j proj` to jump back |
-| Utilities | `New-Password` | `genpass` | Strong local passwords, `-Copy` to clipboard |
-| | `Get-ClipboardList` | `cliplist` | Pasted list → clean array (`cliplist \| tp -Port 3389`) |
-| | `ConvertTo-Base64` / `ConvertFrom-Base64` | `b64` / `unb64` | Text or files |
-| | `Get-Weather` | `weather` | wttr.in in your terminal |
-| | `Set-WindowTitle` | `title` | Set the tab title |
-| | `Get-DadJoke` | `joke` | For morale |
-| Profile | `Show-ProfileFunction` | `pf` | List/search everything here |
-| | `New-ProfileFunction` | `newfn` | Scaffold a new function file |
-| | `Edit-Profile` | `ep` | Open the repo, a function (`ep tp`) or `ep -Local` |
-| | `Invoke-ProfileReload` | `reload` | Reload in place, picking up edits |
-| | `Update-Profile` | | `git pull` + reload |
-| | `Measure-ProfileLoad` | | Startup cost in ms |
+- **[docs/GUIDE.md](docs/GUIDE.md)**: the full guide (install, cookbook, customizing, adding functions, troubleshooting)
+- **[docs/FUNCTIONS.md](docs/FUNCTIONS.md)**: every function with alias, description and an example (generated from the code)
+- In your shell: `pf` lists them all, `pf dns` searches, `Get-Help <name> -Examples` shows examples
 
-\* Windows only, so the real `df`, `du`, `which`, `touch` and `uptime` aren't hidden on macOS/Linux.
+A taste:
+
+| Alias | Does |
+|---|---|
+| `tp host 80,443` | fast port check (many hosts/ports) |
+| `netdiag host` | full network diagnostic with a latency graph |
+| `certexp host` | when a TLS cert expires |
+| `myip` | local + public IP |
+| `flushdns` | flush DNS on any OS |
+| `locked` / `ustat user -Unlock` | AD lockouts and real password expiry |
+| `seu name` / `seg name` | fuzzy AD user / group search |
+| `copygroups from to -WhatIf` | copy group memberships |
+| `uptime` / `errs` | last boot / recent Critical+Error events |
+| `Get-SystemInfo` / `Test-PendingReboot` | one-screen system summary / reboot pending? |
+| `admin cmd` | run something elevated (new Windows Terminal tab) |
+| `dh` / `j 3` / `j proj` | session folder history and jump back |
+| `search text` / `sarep old new` | search / replace inside files |
+| `genpass -Copy` / `cliplist` | password to clipboard / pasted list to array |
+| `pf` / `newfn` / `ep` / `reload` | list / create / edit / reload profile functions |
 
 ### Prompt
 
@@ -137,11 +120,12 @@ Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser
 Invoke-Pester ./Tests
 ```
 
-GitHub Actions runs the tests and PSScriptAnalyzer on Windows (PowerShell 7 and 5.1), macOS and Linux.
+GitHub Actions runs the tests and PSScriptAnalyzer on Windows (PowerShell 7 and 5.1), macOS and Linux, and checks `docs/FUNCTIONS.md` is current (`./tools/Update-FunctionDocs.ps1`).
 
 ## Credits
 
-Ideas borrowed from [jonlabelle/pwsh-profile](https://github.com/jonlabelle/pwsh-profile) and the r/PowerShell thread *"What clever things do you have in your $profile?"*
+- 59 functions come from **[jonlabelle/pwsh-profile](https://github.com/jonlabelle/pwsh-profile)** (MIT, Copyright (c) Jon LaBelle). See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Pull his updates with `./tools/Sync-Upstream.ps1`.
+- Ideas from the r/PowerShell thread *"What clever things do you have in your $profile?"*
 
 ## License
 
