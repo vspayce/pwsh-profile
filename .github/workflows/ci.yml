@@ -21,7 +21,7 @@ jobs:
       run:
         shell: ${{ matrix.shell }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Pester and PSScriptAnalyzer
         run: |
@@ -36,6 +36,7 @@ jobs:
           if ($r | Where-Object Severity -eq 'Error') { exit 1 }
 
       - name: Function reference is up to date
+        if: matrix.shell == 'pwsh'   # one check is enough; 5.1 formats help text slightly differently
         run: ./tools/Update-FunctionDocs.ps1 -Check
 
       - name: Pester
